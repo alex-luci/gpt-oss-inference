@@ -42,7 +42,7 @@ You can execute these robot actions using the execute_robot_command function:
 - "Take off the lid from the gray recipient and place it on the counter"
 - "Pick up the lid from the counter and put it on the gray recipient"
 - "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
-- "Add salt to the pot"
+- "Put salt in the gray recipient"
 
 ## Physical Constraints
 1. Cannot access pineapple unless cabinet door is open
