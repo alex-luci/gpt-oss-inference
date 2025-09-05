@@ -1,77 +1,61 @@
-# GPT-OSS Inference Project
+# Kitchen Robot Assistant (GPT-OSS UI)
 
-A collection of Python scripts for interacting with GPT-OSS (Open Source GPT) models, featuring function calling capabilities for kitchen robot automation.
+This repository contains a single Tkinter desktop application that connects to a local GPT‑OSS model and a local robot control server, enabling end‑to‑end kitchen task automation via native function calling.
 
-## Overview
+## What's included
 
-This project contains various implementations for communicating with GPT-OSS models, with a focus on function calling for robotic kitchen assistance. The main implementation includes a chat interface that can execute robot commands through function calls.
+- `gpt-oss-chat-function-ui.py`: The only app in the repo. A modern UI for chatting with GPT‑OSS and letting it control a kitchen robot via function calls.
+- `README.md`: This file.
 
-## Files
-
-- `gpt-oss-chat-function.py` - Main chat interface with function calling support for kitchen robot automation
-- `gpt-oss-chat-api.py` - Basic API interface for GPT-OSS
-- `gpt-oss-chat-api-memory.py` - API interface with conversation memory
-- `gpt-oss-function-call.py` - Function calling implementation
-- `gpt-oss-autonomous.py` - Autonomous operation script
-- `state-machine.py` - State machine implementation
-- `system-prompts.txt` - System prompts for different use cases
-- `ui.txt` - User interface documentation
-
-## Features
-
-### Kitchen Robot Assistant
-The main chat interface (`gpt-oss-chat-function.py`) provides:
-
-- **Function Calling**: Native GPT-OSS function calling support
-- **Kitchen Automation**: Commands for opening cabinets, moving items, adding ingredients
-- **Physical Constraints**: Enforces kitchen safety rules and logical sequence
-- **Interactive Chat**: Real-time conversation with the robot assistant
-
-### Available Robot Commands
-- Open/close cabinet doors
-- Remove/replace pot lids
-- Pick up and place pineapples
-- Add salt to recipes
-- Get robot status
+All previous experimental scripts were removed to keep the repo focused and easy to run.
 
 ## Requirements
 
-- Python 3.7+
-- requests library
-- GPT-OSS model running on localhost:11434
-- Robot control server on localhost:7000
+- Python 3.8+
+- A running GPT‑OSS server at `http://localhost:11434` (chat API compatible)
+- A robot control server listening on `localhost:7000` (raw TCP socket). The app sends JSON commands like:
+  ```json
+  {"command": "execute_task", "language_instruction": "Open the left cabinet door", "actions_to_execute": 150, "use_angle_stop": true}
+  ```
 
-## Installation
+## Install
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install requests
-   ```
-3. Ensure GPT-OSS is running on localhost:11434
-4. Ensure robot control server is running on localhost:7000
-
-## Usage
-
-Run the main chat interface:
+Create a virtual environment (optional) and install dependencies:
 ```bash
-python gpt-oss-chat-function.py
+pip install requests
 ```
 
-The interface will guide you through available commands and help you interact with the kitchen robot.
+## Run
 
-## Architecture
+```bash
+python gpt-oss-chat-function-ui.py
+```
 
-The project uses a modular approach:
-- **Communication Layer**: Socket-based communication with robot control server
-- **API Layer**: HTTP requests to GPT-OSS API
-- **Function Layer**: Function calling implementation for robot commands
-- **Chat Layer**: Interactive conversation interface
+## How it works (brief)
 
-## Development
+- You chat with GPT‑OSS from the left panel; the model can decide to call functions to control the robot.
+- The app exposes two tools to GPT‑OSS:
+  - `execute_robot_command(language_instruction, actions_to_execute=150, use_angle_stop=True)`
+  - `get_robot_status()`
+- Tool calls are executed and the results are added back to the conversation so the model can iterate.
+- The right panel shows robot status, the current message being executed, and (optionally) a checklist if the model emits one.
 
-This project is designed for experimentation with GPT-OSS function calling capabilities in a kitchen automation context. The codebase includes multiple approaches to function calling and conversation management.
+## Current behavior
+
+- No hardcoded kitchen logic: the model is free to plan and act. There are no preconditions or forced steps in the app.
+- No heuristic state updates: the UI does not guess state from text; status comes from the robot.
+- Task completion is not auto‑inferred; the model can communicate progress in natural language or by emitting a plan.
+
+## Customizing
+
+- To change the system prompt or tool descriptions, edit `_get_system_prompt()` and the `tools` schema inside `_call_gpt_oss()`.
+- If you want stricter sequencing (e.g., always remove lid before adding salt), re‑introduce guards inside `execute_robot_command()` or a planner in `_plan_tasks()`.
+
+## Notes
+
+- This UI assumes both GPT‑OSS and the robot server are reachable locally. Adjust endpoints in `GPTOSSChatBot.__init__` if needed.
+- The UI uses background threads and queues for smooth updates.
 
 ## License
 
-This project is for experimental and educational purposes.
+Experimental/educational use only.
