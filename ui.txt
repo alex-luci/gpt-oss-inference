@@ -17,7 +17,6 @@ def send(cmd):
     resp = s.recv(65536).decode("utf-8")
     s.close()
     return resp
-    print(cmd)
 
 class GPTOSSChatBot:
     def __init__(self,
@@ -30,11 +29,7 @@ class GPTOSSChatBot:
         self.conversation_history = []
         self.available_functions = {
             "execute_robot_command": self.execute_robot_command,
-            "get_robot_status": self.get_robot_status,
-            "update_kitchen_state": self.update_kitchen_state,
-            "mark_task_complete": self.mark_task_complete,
-            "get_current_plan": self.get_current_plan,
-            "create_plan": self.create_plan
+            "get_robot_status": self.get_robot_status
         }
         
         # UI callbacks
@@ -49,7 +44,6 @@ class GPTOSSChatBot:
         self.current_task: Optional[str] = None
         self.current_user_task_text: Optional[str] = None
         self.task_list: List[Dict[str, Any]] = []  # [{"id": 1, "title": str, "done": bool}]
-        # Initialize with default kitchen state
         self.kitchen_state: Dict[str, Any] = {
             "cabinet_open": False,
             "lid_on_pot": True,
@@ -64,66 +58,71 @@ class GPTOSSChatBot:
         }]
     
     def _get_system_prompt(self):
-        return """You are a fully autonomous kitchen assistant. You have complete control over task planning, execution, and state management.
+        return """You are a kitchen assistant helping to make a pineapple smoothie. You must follow the physical constraints of the kitchen and use actions in the correct sequence.
 
-## Your Capabilities
-You can execute robot actions and manage your own state using these functions:
-- execute_robot_command(language_instruction, use_angle_stop=True): Control the robot
-- get_robot_status(): Check robot status
-- update_kitchen_state(state_updates): Update your understanding of kitchen state
-- mark_task_complete(task_id): Mark tasks as complete in your plan
-- get_current_plan(): Review your current plan and state
-- create_plan(tasks): Create a new task plan for the user
+## Kitchen Layout
+- **Left**: Cabinet (currently closed) containing a pineapple
+- **Center**: Pot with lid on top
+- **Right**: Salt shaker
 
-## Your Responsibilities
-1. **Plan Creation**: ALWAYS create a plan first using create_plan() when user requests a task
-2. **State Tracking**: Maintain and update kitchen state as you work
-3. **Task Management**: Mark tasks complete as you finish them
-4. **Adaptive Execution**: Modify plans based on real conditions
-5. **Status Communication**: Keep the user informed of progress
-
-## Available Robot Actions
+## Available Functions & Actions
+You can execute these robot actions using the execute_robot_command function:
 - "Open the left cabinet door"
 - "Close the left cabinet door"
 - "Take off the lid from the gray recipient and place it on the counter"
 - "Pick up the lid from the counter and put it on the gray recipient"
 - "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
-- "Put salt in the gray recipient"
+- "Add salt to the pot"
 
 ## Physical Constraints
-- Cannot access pineapple unless cabinet door is open
-- Cannot put pineapple in pot if lid is on pot
-- Cannot add salt if lid is on pot
-- Must close cabinet door after removing items
-- Must put lid back on pot at the end (for smoothie tasks)
+1. Cannot access pineapple unless cabinet door is open
+2. Cannot put pineapple in pot if lid is on the pot
+3. Cannot add salt if lid is on the pot
+4. Must close cabinet door after removing items (kitchen safety)
+5. Must put lid back on pot at the end
+6. **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
 
-## Your Autonomous Process
-1. **Analyze** user request and current state
-2. **Plan** by creating a task list using create_plan() - THIS IS REQUIRED
-3. **Respect physical constraints**: Do not attempt to do something that is physically impossible
-5. **Execute** each step using robot commands
-6. **Update** kitchen state after each action
-7. **Mark** tasks complete as you finish them
-8. **Adapt** if conditions change or actions fail
-9. **Communicate** progress and completion
+## Your Process
+1. **Analyze** the current kitchen state and user request
+2. **Plan** the sequence of actions needed following physical constraints
+3. **Execute** each action using the execute_robot_command function
+4. **Verify** completion and provide status updates
+5. **Handle** any errors and replan if necessary
 
-## State Management Examples
-After opening cabinet: update_kitchen_state({"cabinet_open": True})
-After removing lid: update_kitchen_state({"lid_on_pot": False})
-After completing a task: mark_task_complete(task_id)
+## Decision Making Examples
+
+**User**: "Make a pineapple smoothie"
+**Your Response**: "I'll help you make a pineapple smoothie! Let me break this down:
+1. First, I need to open the cabinet to access the pineapple
+2. Then remove the pot lid so I can add ingredients
+3. Get the pineapple and put it in the pot
+4. Close the cabinet for safety
+5. Put the lid back on
+
+Let me start by opening the cabinet door."
+*[Then call execute_robot_command with "Open the left cabinet door"]*
+
+**User**: "What's happening?"
+**Your Response**: "Let me check the robot status for you."
+*[Then call get_robot_status function]*
 
 ## Key Behaviors
-- **Be autonomous**: Make all decisions yourself
-- **Be adaptive**: Change plans based on real conditions
-- **Be thorough**: Complete entire tasks end-to-end
-- **Be communicative**: Explain what you're doing and why
-- **Be state-aware**: Always update your understanding of the kitchen
-- **ALWAYS CREATE A PLAN FIRST**: Use create_plan() before executing any tasks
-- **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
+- **Be proactive**: If a task requires multiple steps, plan and execute them all
+- **Be safe**: Always follow physical constraints
+- **Be communicative**: Explain your plan before executing
+- **Be adaptive**: If something fails, replan and try alternative approaches
+- **Be thorough**: Complete entire tasks, not just single actions
+- **Execute step-by-step**: Use execute_robot_command for each physical action needed
 
-You have complete autonomy. Plan, execute, and manage everything yourself!"""
+## Function Usage
+- Use execute_robot_command(language_instruction, actions_to_execute=150, use_angle_stop=True) for robot actions
+- Use get_robot_status() to check robot status when needed
+- Always explain what you're doing before calling functions
+- Wait for function results before planning next steps
 
-    def execute_robot_command(self, language_instruction: str, use_angle_stop: bool = True):
+Remember: The final state should have the cabinet door closed and the lid back on the pot. Take initiative and complete tasks end-to-end using the available functions!"""
+
+    def execute_robot_command(self, language_instruction: str, actions_to_execute: int = 150, use_angle_stop: bool = True):
         """Execute a command on the robot"""
         self.current_task = language_instruction
         # Notify UI execution start
@@ -133,10 +132,42 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             except Exception:
                 pass
         
+        # Guards: enforce preconditions based on kitchen state
+        intent = (self.current_user_task_text or "").lower()
+        instr_lower = (language_instruction or "").lower()
+        
+        # Precondition: cannot add salt if lid is on
+        if "add salt" in instr_lower and self.kitchen_state.get("lid_on_pot", True):
+            payload = {
+                "status": "error",
+                "error": "Cannot add salt while the lid is on the pot. Remove lid first.",
+                "instruction": language_instruction,
+                "use_angle_stop": True,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "precondition_failed": True
+            }
+            if self.on_tool_result:
+                self.on_tool_result("execute_robot_command", payload)
+            return payload
+        
+        # Prevent irrelevant actions for salt-only tasks
+        if "salt" in intent and "open the left cabinet door" in instr_lower:
+            payload = {
+                "status": "error",
+                "error": "Irrelevant action for salt task: opening the cabinet",
+                "instruction": language_instruction,
+                "use_angle_stop": True,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "precondition_failed": True
+            }
+            if self.on_tool_result:
+                self.on_tool_result("execute_robot_command", payload)
+            return payload
+        
         cmd = {
             "command": "execute_task",
             "language_instruction": language_instruction,
-            "actions_to_execute": 150,
+            "actions_to_execute": actions_to_execute,
             "use_angle_stop": True
         }
         
@@ -149,6 +180,20 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "use_angle_stop": True,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
+            
+            # Update local kitchen state heuristically based on the instruction
+            if "open the left cabinet door" in instr_lower:
+                self.kitchen_state["cabinet_open"] = True
+            elif "close the left cabinet door" in instr_lower:
+                self.kitchen_state["cabinet_open"] = False
+            elif "take off the lid" in instr_lower:
+                self.kitchen_state["lid_on_pot"] = False
+            elif "put it on the gray recipient" in instr_lower and "lid" in instr_lower:
+                self.kitchen_state["lid_on_pot"] = True
+            elif "pick up the green pineapple" in instr_lower and "place it in the gray recipient" in instr_lower:
+                self.kitchen_state["pineapple_in_pot"] = True
+            elif "add salt" in instr_lower:
+                self.kitchen_state["salt_added"] = True
             
             if self.on_tool_result:
                 self.on_tool_result("execute_robot_command", payload)
@@ -185,88 +230,6 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 self.on_status_update(payload)
             return payload
     
-    def update_kitchen_state(self, state_updates: Dict[str, Any]):
-        """Let GPT-OSS update kitchen state dynamically"""
-        try:
-            if not isinstance(state_updates, dict):
-                raise ValueError("state_updates must be an object")
-            self.kitchen_state.update(state_updates)
-            if self.on_status_update:
-                self.on_status_update({
-                    "status": "success",
-                    "kitchen_state": self.kitchen_state,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-            return {
-                "status": "success",
-                "updated_state": self.kitchen_state,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-    
-    def mark_task_complete(self, task_id: int):
-        """Let GPT-OSS mark tasks as complete"""
-        try:
-            for task in self.task_list:
-                if task.get("id") == task_id:
-                    task["done"] = True
-                    break
-            if self.on_plan_update:
-                self.on_plan_update(self.task_list)
-            return {
-                "status": "success",
-                "updated_tasks": self.task_list,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-    
-    def get_current_plan(self):
-        """Let GPT-OSS query current plan"""
-        return {
-            "status": "success",
-            "current_plan": self.task_list,
-            "kitchen_state": self.kitchen_state,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    
-    def create_plan(self, tasks: List[Dict[str, Any]]):
-        """Let GPT-OSS create a new task plan"""
-        try:
-            if not isinstance(tasks, list):
-                raise ValueError("tasks must be a list")
-            
-            # Extract only task descriptions for the checklist
-            formatted_tasks = []
-            for i, task in enumerate(tasks):
-                if isinstance(task, dict):
-                    # Extract description from task object
-                    description = task.get("title", task.get("description", str(task)))
-                    formatted_tasks.append({
-                        "id": i + 1,
-                        "title": description,
-                        "done": False
-                    })
-                else:
-                    # If task is just a string, use it as description
-                    formatted_tasks.append({
-                        "id": i + 1,
-                        "title": str(task),
-                        "done": False
-                    })
-            
-            self.task_list = formatted_tasks
-            if self.on_plan_update:
-                self.on_plan_update(self.task_list)
-            return {
-                "status": "success",
-                "created_plan": self.task_list,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-    
     def chat(self, user_message: str) -> str:
         """Main chat function - handles user input and returns response"""
         
@@ -278,8 +241,42 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         self.current_task = user_message
         self.current_user_task_text = user_message
         
-        # Directly call GPT-OSS and let it decide how to proceed (tools vs. text)
-        # No pre-status calls, no injected kitchen state, no pre-planning
+        # Always fetch robot status before doing anything else and record it as a tool call/result
+        status_payload = self.get_robot_status()
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": "Checking current robot status before proceeding...",
+            "tool_calls": [
+                {
+                    "id": "pre_status_check",
+                    "type": "function",
+                    "function": {"name": "get_robot_status", "arguments": {}}
+                }
+            ]
+        })
+        self.conversation_history.append({
+            "role": "tool",
+            "tool_call_id": "pre_status_check",
+            "name": "get_robot_status",
+            "content": json.dumps(status_payload)
+        })
+        
+        # Inject current kitchen state so the model plans with awareness
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": f"Current kitchen_state: {json.dumps(self.kitchen_state)}"
+        })
+        
+        # Planning step: Ask GPT-OSS for a JSON checklist of tasks
+        try:
+            plan = self._plan_tasks(user_message)
+            if plan:
+                self.task_list = plan
+                if self.on_plan_update:
+                    self.on_plan_update(self.task_list)
+        except Exception:
+            # If planning fails, continue without plan
+            pass
         
         # Get GPT-OSS response loop
         gpt_response = self._call_gpt_oss()
@@ -288,8 +285,79 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         return gpt_response
 
     def _plan_tasks(self, user_message: str) -> List[Dict[str, Any]]:
-        """Planner disabled: return empty list and let the model drive planning in free-form."""
-        return []
+        """Ask the model to produce a JSON checklist of tasks for the user's request."""
+        planning_instruction = (
+            "Plan the execution steps before acting. Respond ONLY with compact JSON in the format: "
+            "{\"tasks\":[{\"id\":1,\"title\":\"...\"},{\"id\":2,\"title\":\"...\"}]} . "
+            "No code fences. No explanation."
+        )
+        planning_messages = list(self.conversation_history) + [
+            {"role": "system", "content": planning_instruction}
+        ]
+        payload = {
+            "model": "gpt-oss:20b",
+            "messages": planning_messages,
+            "stream": False
+        }
+        response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
+        if response.status_code != 200:
+            return []
+        result = self._parse_gpt_response(response.text)
+        content = result.get("message", {}).get("content", "").strip()
+        
+        def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
+            try:
+                return json.loads(text)
+            except Exception:
+                # Try to extract JSON between first { and last }
+                start = text.find('{')
+                end = text.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    snippet = text[start:end+1]
+                    try:
+                        return json.loads(snippet)
+                    except Exception:
+                        return None
+                # Try list form between first [ and last ]
+                start = text.find('[')
+                end = text.rfind(']')
+                if start != -1 and end != -1 and end > start:
+                    snippet = text[start:end+1]
+                    try:
+                        tasks = json.loads(snippet)
+                        return {"tasks": tasks} if isinstance(tasks, list) else None
+                    except Exception:
+                        return None
+                return None
+        
+        data = try_parse_json(content)
+        if not data:
+            return []
+        tasks_raw = data.get("tasks", data if isinstance(data, list) else [])
+        normalized: List[Dict[str, Any]] = []
+        if isinstance(tasks_raw, list):
+            for idx, t in enumerate(tasks_raw, start=1):
+                if isinstance(t, dict):
+                    title = t.get("title") or t.get("step") or t.get("name")
+                    if not title:
+                        # If dict but no title, try stringify
+                        title = json.dumps(t)
+                    task_id = t.get("id", idx)
+                else:
+                    title = str(t)
+                    task_id = idx
+                title = title.strip()
+                if not title:
+                    continue
+                normalized.append({"id": task_id, "title": title, "done": False})
+        
+        if normalized:
+            # Add plan to conversation so model can reference it
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": json.dumps({"tasks": [{"id": t["id"], "title": t["title"]} for t in normalized]})
+            })
+        return normalized
     
     def _call_gpt_oss(self) -> str:
         """Call GPT-OSS API with function calling support in a loop until tasks complete"""
@@ -307,6 +375,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                             "language_instruction": {
                                 "type": "string",
                                 "description": "Natural language instruction for the robot"
+                            },
+                            "actions_to_execute": {
+                                "type": "integer",
+                                "description": "Number of actions to execute (default: 150)",
+                                "default": 150
                             },
                             "use_angle_stop": {
                                 "type": "boolean",
@@ -326,66 +399,6 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "parameters": {
                         "type": "object",
                         "properties": {}
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "update_kitchen_state",
-                    "description": "Update remembered kitchen state (assistant-managed)",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "state_updates": {"type": "object", "description": "Partial state to merge"}
-                        },
-                        "required": ["state_updates"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "mark_task_complete",
-                    "description": "Mark a task id as complete in current plan",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {"type": "integer"}
-                        },
-                        "required": ["task_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_current_plan",
-                    "description": "Get current task list and kitchen state",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "create_plan",
-                    "description": "Create a new task plan for the user",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "tasks": {
-                                "type": "array",
-                                "description": "List of tasks to create",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {"type": "string", "description": "Task description"}
-                                    },
-                                    "required": ["title"]
-                                }
-                            }
-                        },
-                        "required": ["tasks"]
                     }
                 }
             }
@@ -618,7 +631,7 @@ class KitchenAssistantUI:
         checklist_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(6, 6))
         ttk.Label(checklist_frame, text="Checklist", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
         columns = ("done", "task")
-        self.task_tree = ttk.Treeview(checklist_frame, columns=columns, show="headings", height=10)
+        self.task_tree = ttk.Treeview(checklist_frame, columns=columns, show="headings", height=14)
         self.task_tree.heading("done", text="Done")
         self.task_tree.heading("task", text="Task")
         self.task_tree.column("done", width=60, anchor="center")
@@ -627,25 +640,6 @@ class KitchenAssistantUI:
         self.task_tree.configure(yscrollcommand=tree_scroll.set)
         self.task_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Kitchen State (below checklist)
-        ks_frame = ttk.Labelframe(status_container, text="Kitchen State", style="Section.TLabelframe")
-        ks_frame.pack(fill=tk.X, expand=False, padx=12, pady=(6, 12))
-        self.ks_vars = {
-            "cabinet_open": tk.StringVar(value="No")
-        ,   "lid_on_pot": tk.StringVar(value="Yes")
-        ,   "pineapple_in_pot": tk.StringVar(value="No")
-        ,   "salt_added": tk.StringVar(value="No")
-        }
-        row = 0
-        ttk.Label(ks_frame, text="Cabinet Open:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["cabinet_open"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Lid On Pot:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["lid_on_pot"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Pineapple In Pot:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["pineapple_in_pot"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Salt Added:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["salt_added"]).grid(row=row, column=1, sticky="w", padx=6)
         
         # Buttons
         status_buttons = ttk.Frame(status_container)
@@ -665,31 +659,16 @@ class KitchenAssistantUI:
         # Initial status load
         self.refresh_status()
         
-        # Initialize kitchen state display with bot's default state
-        self._update_kitchen_state_display(self.bot.kitchen_state)
-        
         # Poll queues for UI updates
         self._poll_queues()
-    
-    def _update_kitchen_state_display(self, kitchen_state: Dict[str, Any]):
-        """Update kitchen state display with given state"""
-        def fmt(v):
-            if isinstance(v, bool):
-                return "Yes" if v else "No"
-            if v is None:
-                return "-"
-            return str(v)
-        for key in ("cabinet_open", "lid_on_pot", "pineapple_in_pot", "salt_added"):
-            if key in self.ks_vars:
-                self.ks_vars[key].set(fmt(kitchen_state.get(key)))
     
     def append_chat(self, text: str, who: str):
         self.chat_history.configure(state=tk.NORMAL)
         if who == "user":
-            self.chat_history.insert(tk.END, "You: ", ("user_prefix",))
+            self.chat_history.insert(tk.END, "👤 You: ", ("user_prefix",))
             self.chat_history.insert(tk.END, f"{text}\n", ("user_text",))
         else:
-            self.chat_history.insert(tk.END, "Assistant: ", ("assistant_prefix",))
+            self.chat_history.insert(tk.END, "🤖 Assistant: ", ("assistant_prefix",))
             self.chat_history.insert(tk.END, f"{text}\n", ("assistant_text",))
         self.chat_history.see(tk.END)
         self.chat_history.configure(state=tk.DISABLED)
@@ -735,18 +714,29 @@ class KitchenAssistantUI:
     
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            # Do not hardcode task completion; the model should drive updates
-            # Optionally, the model can emit plan updates as assistant messages which we render
-            pass
+            # Mark a task as done if its title appears in the instruction text
+            desc = payload.get("instruction", "") or ""
+            lowered = desc.lower()
+            updated = False
+            for t in getattr(self.bot, "task_list", []):
+                if not t.get("done") and t.get("title") and t["title"].lower() in lowered:
+                    t["done"] = True
+                    updated = True
+            # Fallback: if no match but success, mark the next pending task as done
+            if not updated and payload.get("status") == "success":
+                next_pending = next((t for t in self.bot.task_list if not t.get("done")), None)
+                if next_pending:
+                    next_pending["done"] = True
+                    updated = True
+            if updated:
+                # Enqueue plan update to render in UI thread
+                self.plan_queue.put(list(getattr(self.bot, "task_list", [])))
         elif name == "get_robot_status":
             # status panel handled in _on_status_update
             pass
 
     def _on_status_update(self, payload: Dict[str, Any]):
         self.status_queue.put(payload)
-        # If kitchen_state present, update labels
-        if isinstance(payload, dict) and payload.get("status") == "success" and payload.get("kitchen_state") is not None:
-            self._update_kitchen_state_display(payload.get("kitchen_state", {}))
     
     def _on_plan_update(self, plan: List[Dict[str, Any]]):
         self.plan_queue.put(plan)

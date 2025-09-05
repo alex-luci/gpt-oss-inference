@@ -73,27 +73,6 @@ GPT-OSS can call these functions to control the kitchen:
 - **GPT-OSS Server**: Running at `http://localhost:11434` (Ollama-compatible)
 - **Robot Server**: Listening on `localhost:7000` (TCP socket for robot commands)
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/alex-luci/gpt-oss-inference.git
-cd gpt-oss-inference
-```
-
-2. Install dependencies:
-```bash
-pip install requests
-```
-
-3. Start your GPT-OSS server (e.g., Ollama):
-```bash
-ollama serve
-ollama pull gpt-oss:20b  # or your preferred model
-```
-
-4. Start your robot control server on port 7000
-
 ## Usage
 
 1. Run the application:
