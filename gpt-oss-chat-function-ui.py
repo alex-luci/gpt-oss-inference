@@ -132,38 +132,6 @@ Remember: The final state should have the cabinet door closed and the lid back o
             except Exception:
                 pass
         
-        # Guards: enforce preconditions based on kitchen state
-        intent = (self.current_user_task_text or "").lower()
-        instr_lower = (language_instruction or "").lower()
-        
-        # Precondition: cannot add salt if lid is on
-        if "add salt" in instr_lower and self.kitchen_state.get("lid_on_pot", True):
-            payload = {
-                "status": "error",
-                "error": "Cannot add salt while the lid is on the pot. Remove lid first.",
-                "instruction": language_instruction,
-                "use_angle_stop": True,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "precondition_failed": True
-            }
-            if self.on_tool_result:
-                self.on_tool_result("execute_robot_command", payload)
-            return payload
-        
-        # Prevent irrelevant actions for salt-only tasks
-        if "salt" in intent and "open the left cabinet door" in instr_lower:
-            payload = {
-                "status": "error",
-                "error": "Irrelevant action for salt task: opening the cabinet",
-                "instruction": language_instruction,
-                "use_angle_stop": True,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "precondition_failed": True
-            }
-            if self.on_tool_result:
-                self.on_tool_result("execute_robot_command", payload)
-            return payload
-        
         cmd = {
             "command": "execute_task",
             "language_instruction": language_instruction,
@@ -180,20 +148,6 @@ Remember: The final state should have the cabinet door closed and the lid back o
                 "use_angle_stop": True,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            
-            # Update local kitchen state heuristically based on the instruction
-            if "open the left cabinet door" in instr_lower:
-                self.kitchen_state["cabinet_open"] = True
-            elif "close the left cabinet door" in instr_lower:
-                self.kitchen_state["cabinet_open"] = False
-            elif "take off the lid" in instr_lower:
-                self.kitchen_state["lid_on_pot"] = False
-            elif "put it on the gray recipient" in instr_lower and "lid" in instr_lower:
-                self.kitchen_state["lid_on_pot"] = True
-            elif "pick up the green pineapple" in instr_lower and "place it in the gray recipient" in instr_lower:
-                self.kitchen_state["pineapple_in_pot"] = True
-            elif "add salt" in instr_lower:
-                self.kitchen_state["salt_added"] = True
             
             if self.on_tool_result:
                 self.on_tool_result("execute_robot_command", payload)
@@ -241,42 +195,8 @@ Remember: The final state should have the cabinet door closed and the lid back o
         self.current_task = user_message
         self.current_user_task_text = user_message
         
-        # Always fetch robot status before doing anything else and record it as a tool call/result
-        status_payload = self.get_robot_status()
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": "Checking current robot status before proceeding...",
-            "tool_calls": [
-                {
-                    "id": "pre_status_check",
-                    "type": "function",
-                    "function": {"name": "get_robot_status", "arguments": {}}
-                }
-            ]
-        })
-        self.conversation_history.append({
-            "role": "tool",
-            "tool_call_id": "pre_status_check",
-            "name": "get_robot_status",
-            "content": json.dumps(status_payload)
-        })
-        
-        # Inject current kitchen state so the model plans with awareness
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": f"Current kitchen_state: {json.dumps(self.kitchen_state)}"
-        })
-        
-        # Planning step: Ask GPT-OSS for a JSON checklist of tasks
-        try:
-            plan = self._plan_tasks(user_message)
-            if plan:
-                self.task_list = plan
-                if self.on_plan_update:
-                    self.on_plan_update(self.task_list)
-        except Exception:
-            # If planning fails, continue without plan
-            pass
+        # Directly call GPT-OSS and let it decide how to proceed (tools vs. text)
+        # No pre-status calls, no injected kitchen state, no pre-planning
         
         # Get GPT-OSS response loop
         gpt_response = self._call_gpt_oss()
@@ -285,79 +205,8 @@ Remember: The final state should have the cabinet door closed and the lid back o
         return gpt_response
 
     def _plan_tasks(self, user_message: str) -> List[Dict[str, Any]]:
-        """Ask the model to produce a JSON checklist of tasks for the user's request."""
-        planning_instruction = (
-            "Plan the execution steps before acting. Respond ONLY with compact JSON in the format: "
-            "{\"tasks\":[{\"id\":1,\"title\":\"...\"},{\"id\":2,\"title\":\"...\"}]} . "
-            "No code fences. No explanation."
-        )
-        planning_messages = list(self.conversation_history) + [
-            {"role": "system", "content": planning_instruction}
-        ]
-        payload = {
-            "model": "gpt-oss:20b",
-            "messages": planning_messages,
-            "stream": False
-        }
-        response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
-        if response.status_code != 200:
-            return []
-        result = self._parse_gpt_response(response.text)
-        content = result.get("message", {}).get("content", "").strip()
-        
-        def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
-            try:
-                return json.loads(text)
-            except Exception:
-                # Try to extract JSON between first { and last }
-                start = text.find('{')
-                end = text.rfind('}')
-                if start != -1 and end != -1 and end > start:
-                    snippet = text[start:end+1]
-                    try:
-                        return json.loads(snippet)
-                    except Exception:
-                        return None
-                # Try list form between first [ and last ]
-                start = text.find('[')
-                end = text.rfind(']')
-                if start != -1 and end != -1 and end > start:
-                    snippet = text[start:end+1]
-                    try:
-                        tasks = json.loads(snippet)
-                        return {"tasks": tasks} if isinstance(tasks, list) else None
-                    except Exception:
-                        return None
-                return None
-        
-        data = try_parse_json(content)
-        if not data:
-            return []
-        tasks_raw = data.get("tasks", data if isinstance(data, list) else [])
-        normalized: List[Dict[str, Any]] = []
-        if isinstance(tasks_raw, list):
-            for idx, t in enumerate(tasks_raw, start=1):
-                if isinstance(t, dict):
-                    title = t.get("title") or t.get("step") or t.get("name")
-                    if not title:
-                        # If dict but no title, try stringify
-                        title = json.dumps(t)
-                    task_id = t.get("id", idx)
-                else:
-                    title = str(t)
-                    task_id = idx
-                title = title.strip()
-                if not title:
-                    continue
-                normalized.append({"id": task_id, "title": title, "done": False})
-        
-        if normalized:
-            # Add plan to conversation so model can reference it
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": json.dumps({"tasks": [{"id": t["id"], "title": t["title"]} for t in normalized]})
-            })
-        return normalized
+        """Planner disabled: return empty list and let the model drive planning in free-form."""
+        return []
     
     def _call_gpt_oss(self) -> str:
         """Call GPT-OSS API with function calling support in a loop until tasks complete"""
@@ -714,23 +563,9 @@ class KitchenAssistantUI:
     
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            # Mark a task as done if its title appears in the instruction text
-            desc = payload.get("instruction", "") or ""
-            lowered = desc.lower()
-            updated = False
-            for t in getattr(self.bot, "task_list", []):
-                if not t.get("done") and t.get("title") and t["title"].lower() in lowered:
-                    t["done"] = True
-                    updated = True
-            # Fallback: if no match but success, mark the next pending task as done
-            if not updated and payload.get("status") == "success":
-                next_pending = next((t for t in self.bot.task_list if not t.get("done")), None)
-                if next_pending:
-                    next_pending["done"] = True
-                    updated = True
-            if updated:
-                # Enqueue plan update to render in UI thread
-                self.plan_queue.put(list(getattr(self.bot, "task_list", [])))
+            # Do not hardcode task completion; the model should drive updates
+            # Optionally, the model can emit plan updates as assistant messages which we render
+            pass
         elif name == "get_robot_status":
             # status panel handled in _on_status_update
             pass
