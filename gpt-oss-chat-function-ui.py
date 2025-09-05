@@ -33,7 +33,8 @@ class GPTOSSChatBot:
             "get_robot_status": self.get_robot_status,
             "update_kitchen_state": self.update_kitchen_state,
             "mark_task_complete": self.mark_task_complete,
-            "get_current_plan": self.get_current_plan
+            "get_current_plan": self.get_current_plan,
+            "create_plan": self.create_plan
         }
         
         # UI callbacks
@@ -48,8 +49,13 @@ class GPTOSSChatBot:
         self.current_task: Optional[str] = None
         self.current_user_task_text: Optional[str] = None
         self.task_list: List[Dict[str, Any]] = []  # [{"id": 1, "title": str, "done": bool}]
-        # Let GPT-OSS build and own the state via update_kitchen_state
-        self.kitchen_state: Dict[str, Any] = {}
+        # Initialize with default kitchen state
+        self.kitchen_state: Dict[str, Any] = {
+            "cabinet_open": False,
+            "lid_on_pot": True,
+            "pineapple_in_pot": False,
+            "salt_added": False
+        }
         
         # Initialize with system prompt that enables function calling
         self.conversation_history = [{
@@ -62,14 +68,15 @@ class GPTOSSChatBot:
 
 ## Your Capabilities
 You can execute robot actions and manage your own state using these functions:
-- execute_robot_command(language_instruction, actions_to_execute=150, use_angle_stop=True): Control the robot
+- execute_robot_command(language_instruction, use_angle_stop=True): Control the robot
 - get_robot_status(): Check robot status
 - update_kitchen_state(state_updates): Update your understanding of kitchen state
 - mark_task_complete(task_id): Mark tasks as complete in your plan
 - get_current_plan(): Review your current plan and state
+- create_plan(tasks): Create a new task plan for the user
 
 ## Your Responsibilities
-1. **Plan Creation**: Create your own task plans based on user requests
+1. **Plan Creation**: ALWAYS create a plan first using create_plan() when user requests a task
 2. **State Tracking**: Maintain and update kitchen state as you work
 3. **Task Management**: Mark tasks complete as you finish them
 4. **Adaptive Execution**: Modify plans based on real conditions
@@ -92,12 +99,13 @@ You can execute robot actions and manage your own state using these functions:
 
 ## Your Autonomous Process
 1. **Analyze** user request and current state
-2. **Plan** by creating a task list (you decide the steps)
-3. **Execute** each step using robot commands
-4. **Update** kitchen state after each action
-5. **Mark** tasks complete as you finish them
-6. **Adapt** if conditions change or actions fail
-7. **Communicate** progress and completion
+2. **Plan** by creating a task list using create_plan() - THIS IS REQUIRED
+3. **Respect physical constraints**: Do not attempt to do something that is physically impossible
+5. **Execute** each step using robot commands
+6. **Update** kitchen state after each action
+7. **Mark** tasks complete as you finish them
+8. **Adapt** if conditions change or actions fail
+9. **Communicate** progress and completion
 
 ## State Management Examples
 After opening cabinet: update_kitchen_state({"cabinet_open": True})
@@ -110,6 +118,7 @@ After completing a task: mark_task_complete(task_id)
 - **Be thorough**: Complete entire tasks end-to-end
 - **Be communicative**: Explain what you're doing and why
 - **Be state-aware**: Always update your understanding of the kitchen
+- **ALWAYS CREATE A PLAN FIRST**: Use create_plan() before executing any tasks
 - **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
 
 You have complete autonomy. Plan, execute, and manage everything yourself!"""
@@ -222,6 +231,42 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     
+    def create_plan(self, tasks: List[Dict[str, Any]]):
+        """Let GPT-OSS create a new task plan"""
+        try:
+            if not isinstance(tasks, list):
+                raise ValueError("tasks must be a list")
+            
+            # Extract only task descriptions for the checklist
+            formatted_tasks = []
+            for i, task in enumerate(tasks):
+                if isinstance(task, dict):
+                    # Extract description from task object
+                    description = task.get("title", task.get("description", str(task)))
+                    formatted_tasks.append({
+                        "id": i + 1,
+                        "title": description,
+                        "done": False
+                    })
+                else:
+                    # If task is just a string, use it as description
+                    formatted_tasks.append({
+                        "id": i + 1,
+                        "title": str(task),
+                        "done": False
+                    })
+            
+            self.task_list = formatted_tasks
+            if self.on_plan_update:
+                self.on_plan_update(self.task_list)
+            return {
+                "status": "success",
+                "created_plan": self.task_list,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+    
     def chat(self, user_message: str) -> str:
         """Main chat function - handles user input and returns response"""
         
@@ -318,6 +363,30 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "name": "get_current_plan",
                     "description": "Get current task list and kitchen state",
                     "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_plan",
+                    "description": "Create a new task plan for the user",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tasks": {
+                                "type": "array",
+                                "description": "List of tasks to create",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string", "description": "Task description"}
+                                    },
+                                    "required": ["title"]
+                                }
+                            }
+                        },
+                        "required": ["tasks"]
+                    }
                 }
             }
         ]
@@ -563,10 +632,10 @@ class KitchenAssistantUI:
         ks_frame = ttk.Labelframe(status_container, text="Kitchen State", style="Section.TLabelframe")
         ks_frame.pack(fill=tk.X, expand=False, padx=12, pady=(6, 12))
         self.ks_vars = {
-            "cabinet_open": tk.StringVar(value="-")
-        ,   "lid_on_pot": tk.StringVar(value="-")
-        ,   "pineapple_in_pot": tk.StringVar(value="-")
-        ,   "salt_added": tk.StringVar(value="-")
+            "cabinet_open": tk.StringVar(value="No")
+        ,   "lid_on_pot": tk.StringVar(value="Yes")
+        ,   "pineapple_in_pot": tk.StringVar(value="No")
+        ,   "salt_added": tk.StringVar(value="No")
         }
         row = 0
         ttk.Label(ks_frame, text="Cabinet Open:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
@@ -596,16 +665,31 @@ class KitchenAssistantUI:
         # Initial status load
         self.refresh_status()
         
+        # Initialize kitchen state display with bot's default state
+        self._update_kitchen_state_display(self.bot.kitchen_state)
+        
         # Poll queues for UI updates
         self._poll_queues()
+    
+    def _update_kitchen_state_display(self, kitchen_state: Dict[str, Any]):
+        """Update kitchen state display with given state"""
+        def fmt(v):
+            if isinstance(v, bool):
+                return "Yes" if v else "No"
+            if v is None:
+                return "-"
+            return str(v)
+        for key in ("cabinet_open", "lid_on_pot", "pineapple_in_pot", "salt_added"):
+            if key in self.ks_vars:
+                self.ks_vars[key].set(fmt(kitchen_state.get(key)))
     
     def append_chat(self, text: str, who: str):
         self.chat_history.configure(state=tk.NORMAL)
         if who == "user":
-            self.chat_history.insert(tk.END, "👤 You: ", ("user_prefix",))
+            self.chat_history.insert(tk.END, "You: ", ("user_prefix",))
             self.chat_history.insert(tk.END, f"{text}\n", ("user_text",))
         else:
-            self.chat_history.insert(tk.END, "🤖 Assistant: ", ("assistant_prefix",))
+            self.chat_history.insert(tk.END, "Assistant: ", ("assistant_prefix",))
             self.chat_history.insert(tk.END, f"{text}\n", ("assistant_text",))
         self.chat_history.see(tk.END)
         self.chat_history.configure(state=tk.DISABLED)
@@ -662,16 +746,7 @@ class KitchenAssistantUI:
         self.status_queue.put(payload)
         # If kitchen_state present, update labels
         if isinstance(payload, dict) and payload.get("status") == "success" and payload.get("kitchen_state") is not None:
-            ks = payload.get("kitchen_state") or {}
-            def fmt(v):
-                if isinstance(v, bool):
-                    return "Yes" if v else "No"
-                if v is None:
-                    return "-"
-                return str(v)
-            for key in ("cabinet_open", "lid_on_pot", "pineapple_in_pot", "salt_added"):
-                if key in self.ks_vars:
-                    self.ks_vars[key].set(fmt(ks.get(key)))
+            self._update_kitchen_state_display(payload.get("kitchen_state", {}))
     
     def _on_plan_update(self, plan: List[Dict[str, Any]]):
         self.plan_queue.put(plan)
