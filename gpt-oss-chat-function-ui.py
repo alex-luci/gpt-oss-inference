@@ -11,12 +11,13 @@ from tkinter import ttk
 
 def send(cmd):
     """Function that GPT-OSS will call"""
-    s = socket.socket()
-    s.connect(("localhost", 7000))
-    s.send(json.dumps(cmd).encode("utf-8"))
-    resp = s.recv(65536).decode("utf-8")
-    s.close()
-    return resp
+    # s = socket.socket()
+    # s.connect(("localhost", 7000))
+    # s.send(json.dumps(cmd).encode("utf-8"))
+    # resp = s.recv(65536).decode("utf-8")
+    # s.close()
+    # return resp
+    print(cmd)
 
 class GPTOSSChatBot:
     def __init__(self,
@@ -109,8 +110,10 @@ After completing a task: mark_task_complete(task_id)
 - **Be thorough**: Complete entire tasks end-to-end
 - **Be communicative**: Explain what you're doing and why
 - **Be state-aware**: Always update your understanding of the kitchen
+- **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
 
 You have complete autonomy. Plan, execute, and manage everything yourself!"""
+
     def execute_robot_command(self, language_instruction: str, use_angle_stop: bool = True):
         """Execute a command on the robot"""
         self.current_task = language_instruction
