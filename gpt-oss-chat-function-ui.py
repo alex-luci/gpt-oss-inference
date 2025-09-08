@@ -737,7 +737,14 @@ class KitchenAssistantUI:
         if name == "execute_robot_command":
             # Do not hardcode task completion; the model should drive updates
             # Optionally, the model can emit plan updates as assistant messages which we render
-            pass
+            # Additionally, when a robot command succeeds, optimistically mark the next pending task as complete
+            try:
+                if isinstance(payload, dict) and payload.get("status") == "success":
+                    next_task = next((t for t in self.bot.task_list if not t.get("done")), None)
+                    if next_task and isinstance(next_task.get("id"), int):
+                        self.bot.mark_task_complete(next_task.get("id"))
+            except Exception:
+                pass
         elif name == "get_robot_status":
             # status panel handled in _on_status_update
             pass
