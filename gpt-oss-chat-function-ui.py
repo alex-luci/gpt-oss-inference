@@ -6,8 +6,19 @@ import threading
 import queue
 import time
 from datetime import datetime, timezone
-import tkinter as tk
-from tkinter import ttk
+# removed tkinter; switch to PyQt5
+from PyQt5 import QtWidgets, QtCore
+
+# ----- Logging helpers -----
+VERBOSE_LOGS = False
+
+def _log_debug(message: str):
+    if VERBOSE_LOGS:
+        print(message)
+
+def _log_info(message: str):
+    print(message)
+
 
 def send(cmd):
     """Function that GPT-OSS will call"""
@@ -16,8 +27,8 @@ def send(cmd):
     s.send(json.dumps(cmd).encode("utf-8"))
     resp = s.recv(65536).decode("utf-8")
     s.close()
+    _log_debug(f"[Robot] send {cmd}")
     return resp
-    print(cmd)
 
 class GPTOSSChatBot:
     def __init__(self,
@@ -25,7 +36,8 @@ class GPTOSSChatBot:
                  on_tool_result: Optional[Callable[[str, Dict[str, Any]], None]] = None,
                  on_status_update: Optional[Callable[[Dict[str, Any]], None]] = None,
                  on_plan_update: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
-                 on_execute_start: Optional[Callable[[str], None]] = None):
+                 on_execute_start: Optional[Callable[[str], None]] = None,
+                 on_assistant_stream: Optional[Callable[[Dict[str, Any]], None]] = None):
         self.gpt_oss_url = "http://localhost:11434/api/chat"
         self.conversation_history = []
         self.available_functions = {
@@ -43,6 +55,7 @@ class GPTOSSChatBot:
         self.on_status_update = on_status_update
         self.on_plan_update = on_plan_update
         self.on_execute_start = on_execute_start
+        self.on_assistant_stream = on_assistant_stream
         
         # State tracking
         self.last_robot_status: Optional[Dict[str, Any]] = None
@@ -152,6 +165,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             
             if self.on_tool_result:
                 self.on_tool_result("execute_robot_command", payload)
+            _log_info(f"[Robot] OK execute: {language_instruction}")
             return payload
         except Exception as e:
             payload = {
@@ -163,6 +177,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             }
             if self.on_tool_result:
                 self.on_tool_result("execute_robot_command", payload)
+            _log_info(f"[Robot] ERR execute: {language_instruction} -> {e}")
             return payload
     
     def get_robot_status(self):
@@ -176,6 +191,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 self.on_tool_result("get_robot_status", payload)
             if self.on_status_update:
                 self.on_status_update(payload)
+            _log_info("[Robot] OK status")
             return payload
         except Exception as e:
             payload = {"status": "error", "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -183,6 +199,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 self.on_tool_result("get_robot_status", payload)
             if self.on_status_update:
                 self.on_status_update(payload)
+            _log_info(f"[Robot] ERR status -> {e}")
             return payload
     
     def update_kitchen_state(self, state_updates: Dict[str, Any]):
@@ -197,6 +214,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "kitchen_state": self.kitchen_state,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
+            _log_info(f"[State] {state_updates}")
             return {
                 "status": "success",
                 "updated_state": self.kitchen_state,
@@ -214,6 +232,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     break
             if self.on_plan_update:
                 self.on_plan_update(self.task_list)
+            _log_info(f"[Plan] Task #{task_id} complete")
             return {
                 "status": "success",
                 "updated_tasks": self.task_list,
@@ -259,6 +278,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             self.task_list = formatted_tasks
             if self.on_plan_update:
                 self.on_plan_update(self.task_list)
+            _log_info(f"[Plan] Created {len(self.task_list)} tasks")
             return {
                 "status": "success",
                 "created_plan": self.task_list,
@@ -397,116 +417,203 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         try:
             while step < max_steps:
                 step += 1
-                print(f"🔍 Calling GPT-OSS (step {step}) with tools enabled...")
+                _log_info(f"[GPT] step {step}")
                 
                 payload = {
                     "model": "gpt-oss:20b",
                     "messages": self.conversation_history,
                     "tools": tools,
                     "tool_choice": "auto",
-                    "stream": False
+                    "stream": True
                 }
                 
-                response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
-                
+                # Stream response for smoother UI
+                response = requests.post(self.gpt_oss_url, json=payload, timeout=(10, 600), stream=True)
                 if response.status_code != 200:
-                    print(f"❌ HTTP Error: {response.status_code}")
+                    _log_info(f"[HTTP {response.status_code}] stream request failed")
                     return f"HTTP Error {response.status_code}: {response.text}"
                 
-                result = self._parse_gpt_response(response.text)
-                message = result.get("message", {})
+                # Begin streaming to UI
+                if self.on_assistant_stream:
+                    try:
+                        self.on_assistant_stream({"type": "start"})
+                    except Exception:
+                        pass
+                full_content = ""
+                tool_calls_buffer: List[Dict[str, Any]] = []
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        # Some servers prefix with 'data: '
+                        if line.startswith("data: "):
+                            try:
+                                obj = json.loads(line[len("data: "):])
+                            except Exception:
+                                continue
+                        else:
+                            continue
+                    # Ollama-like streaming fields
+                    if obj.get("done") is True:
+                        break
+                    msg = obj.get("message", {})
+                    delta = msg.get("content", "")
+                    if delta:
+                        full_content += delta
+                        if self.on_assistant_stream:
+                            try:
+                                self.on_assistant_stream({"type": "delta", "text": delta})
+                            except Exception:
+                                pass
+                        # Slow down streaming slightly for better readability
+                        time.sleep(0.02)
+                    # Capture tool calls if any appear
+                    tc = msg.get("tool_calls")
+                    if tc:
+                        tool_calls_buffer = tc
+                # Finish stream
+                if self.on_assistant_stream:
+                    try:
+                        self.on_assistant_stream({"type": "end"})
+                    except Exception:
+                        pass
                 
-                # Get the text content
-                content = message.get("content", "")
-                
-                # Check for tool calls
-                tool_calls = message.get("tool_calls", [])
-                
-                # Retry once if both are empty
-                if not content and not tool_calls:
-                    print("⚠️ Empty reply from model; retrying once...")
-                    retry_payload = dict(payload)
-                    # Nudge with a small assistant reminder
-                    self.conversation_history.append({"role": "assistant", "content": "Continue with the next step following constraints."})
-                    retry_payload["messages"] = self.conversation_history
-                    response = requests.post(self.gpt_oss_url, json=retry_payload, timeout=30)
-                    if response.status_code == 200:
-                        result = self._parse_gpt_response(response.text)
-                        message = result.get("message", {})
-                        content = message.get("content", "")
-                        tool_calls = message.get("tool_calls", [])
-                
-                if tool_calls:
-                    print(f"🔧 GPT-OSS wants to call {len(tool_calls)} function(s) (step {step})")
-                    
-                    # Execute tool calls
+                # If the assistant emitted tool calls, execute them
+                if tool_calls_buffer:
+                    _log_info(f"[Tool] {len(tool_calls_buffer)} call(s)")
                     tool_results = []
-                    for i, tool_call in enumerate(tool_calls):
+                    for i, tool_call in enumerate(tool_calls_buffer):
                         function_name = tool_call["function"]["name"]
                         function_args = tool_call["function"].get("arguments", {})
-                        
-                        print(f"🤖 Calling: {function_name}({function_args})")
-                        
+                        # concise argument preview for key tools
+                        preview = ""
+                        if function_name == "execute_robot_command":
+                            if isinstance(function_args, dict):
+                                preview = function_args.get("language_instruction", "")[:60]
+                        _log_info(f"  ↳ {function_name} {('('+preview+'...)') if preview else ''}")
                         if function_name in self.available_functions:
                             try:
-                                # Some providers pass arguments as JSON strings
                                 if isinstance(function_args, str):
                                     try:
                                         function_args = json.loads(function_args)
                                     except Exception:
-                                        # keep as-is if not a JSON string
                                         pass
                                 result_payload = self.available_functions[function_name](**function_args)
                                 tool_results.append(result_payload)
-                                print(f"✅ Function result: {result_payload}")
+                                _log_info(f"  ✓ {function_name}")
                             except Exception as e:
                                 error_result = {"status": "error", "error": str(e)}
                                 tool_results.append(error_result)
-                                print(f"❌ Function error: {e}")
+                                _log_info(f"  ✗ {function_name} -> {e}")
                         else:
                             unknown_result = {"status": "error", "error": f"Unknown function: {function_name}"}
                             tool_results.append(unknown_result)
-                            print(f"❌ Unknown function: {function_name}")
-                    
-                    # Add assistant message with tool calls to history
+                            _log_info(f"  ✗ Unknown function: {function_name}")
+                    # Update history with streamed assistant message and tool calls
                     self.conversation_history.append({
                         "role": "assistant",
-                        "content": content,
-                        "tool_calls": tool_calls
+                        "content": full_content,
+                        "tool_calls": tool_calls_buffer
                     })
-                    
-                    # Add tool results to history
-                    for i, (tool_call, result_payload) in enumerate(zip(tool_calls, tool_results)):
+                    for i, (tool_call, result_payload) in enumerate(zip(tool_calls_buffer, tool_results)):
                         self.conversation_history.append({
                             "role": "tool",
                             "tool_call_id": f"call_{i}",
                             "name": tool_call["function"]["name"],
                             "content": json.dumps(result_payload)
                         })
-                    
-                    # Continue loop to let the model observe tool results and decide next actions
+                    # Continue loop to let model observe results
                     continue
                 else:
-                    # No tool calls, just regular response — assume completion
-                    if content:
+                    # No tool calls; finalize text answer
+                    if full_content:
                         self.conversation_history.append({
                             "role": "assistant",
-                            "content": content
+                            "content": full_content
                         })
-                        print(f"🤖 Assistant: {content}")
-                        if self.on_assistant_message:
-                            self.on_assistant_message(content)
-                        return content
-                    else:
-                        print("❌ No content or tool calls in response")
-                        return "I didn't understand that. Can you try again?"
+                        return full_content
+                    # Fallback: non-streaming request if no streamed content arrived
+                    _log_info("[Fallback] No stream content -> non-streaming request")
+                    fallback_payload = dict(payload)
+                    fallback_payload["stream"] = False
+                    try:
+                        non_stream_resp = requests.post(self.gpt_oss_url, json=fallback_payload, timeout=30)
+                        if non_stream_resp.status_code == 200:
+                            parsed = self._parse_gpt_response(non_stream_resp.text)
+                            message = parsed.get("message", {})
+                            content = message.get("content", "")
+                            tool_calls = message.get("tool_calls", [])
+                            if tool_calls:
+                                _log_info(f"[Tool] {len(tool_calls)} call(s) (fallback)")
+                                tool_results = []
+                                for i, tool_call in enumerate(tool_calls):
+                                    function_name = tool_call["function"]["name"]
+                                    function_args = tool_call["function"].get("arguments", {})
+                                    preview = ""
+                                    if function_name == "execute_robot_command":
+                                        if isinstance(function_args, dict):
+                                            preview = function_args.get("language_instruction", "")[:60]
+                                    _log_info(f"  ↳ {function_name} {('('+preview+'...)') if preview else ''}")
+                                    if function_name in self.available_functions:
+                                        try:
+                                            if isinstance(function_args, str):
+                                                try:
+                                                    function_args = json.loads(function_args)
+                                                except Exception:
+                                                    pass
+                                            result_payload = self.available_functions[function_name](**function_args)
+                                            tool_results.append(result_payload)
+                                            _log_info(f"  ✓ {function_name}")
+                                        except Exception as e:
+                                            error_result = {"status": "error", "error": str(e)}
+                                            tool_results.append(error_result)
+                                            _log_info(f"  ✗ {function_name} -> {e}")
+                                    else:
+                                        unknown_result = {"status": "error", "error": f"Unknown function: {function_name}"}
+                                        tool_results.append(unknown_result)
+                                        _log_info(f"  ✗ Unknown function: {function_name}")
+                                # Record and continue
+                                self.conversation_history.append({
+                                    "role": "assistant",
+                                    "content": content,
+                                    "tool_calls": tool_calls
+                                })
+                                for i, (tool_call, result_payload) in enumerate(zip(tool_calls, tool_results)):
+                                    self.conversation_history.append({
+                                        "role": "tool",
+                                        "tool_call_id": f"call_{i}",
+                                        "name": tool_call["function"]["name"],
+                                        "content": json.dumps(result_payload)
+                                    })
+                                continue
+                            elif content:
+                                # Simulate streamed delivery to UI for consistency
+                                if self.on_assistant_stream:
+                                    try:
+                                        self.on_assistant_stream({"type": "start"})
+                                        self.on_assistant_stream({"type": "delta", "text": content})
+                                        self.on_assistant_stream({"type": "end"})
+                                    except Exception:
+                                        pass
+                                self.conversation_history.append({
+                                    "role": "assistant",
+                                    "content": content
+                                })
+                                return content
+                        else:
+                            _log_info(f"[HTTP {non_stream_resp.status_code}] fallback request failed")
+                    except Exception as e:
+                        _log_info(f"[Fallback] request error -> {e}")
+                    # Nothing usable
+                    return "I didn't understand that. Can you try again?"
             
-            # Safety valve to prevent infinite loops
-            print("⚠️ Reached maximum step limit without a final answer.")
+            _log_info("[GPT] Reached maximum step limit")
             return "I executed many steps but reached the maximum step limit. If there's more to do, please continue."
         except Exception as e:
             error_msg = f"Error calling GPT-OSS: {e}"
-            print(f"❌ {error_msg}")
+            _log_info(f"[GPT] ERR -> {e}")
             return error_msg
     
     def _parse_gpt_response(self, response_text: str) -> Dict:
@@ -518,140 +625,152 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             return {"message": {"content": response_text}}
 
 # --------------------------
-# Tkinter UI
+# PyQt5 UI
 # --------------------------
-class KitchenAssistantUI:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Kitchen Robot Assistant (GPT-OSS)")
-        self.root.geometry("1100x700")
+class KitchenAssistantUI(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Kitchen Robot Assistant (GPT-OSS)")
+        self.resize(1100, 700)
         
-        # Global style
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root_layout = QtWidgets.QHBoxLayout(central)
         
-        style.configure("Title.TLabel", font=("Inter", 15, "bold"))
-        style.configure("Subtitle.TLabel", font=("Inter", 11))
-        style.configure("Section.TLabelframe", background="#F7F8FA")
-        style.configure("Section.TLabelframe.Label", font=("Inter", 12, "bold"))
-        style.configure("TButton", font=("Inter", 10))
-        style.configure("Accent.TButton", font=("Inter", 10, "bold"))
+        splitter = QtWidgets.QSplitter()
+        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+        root_layout.addWidget(splitter)
         
-        self.root.configure(bg="#EEF1F5")
+        # Left panel (Chat)
+        left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
         
-        # Queues for thread-safe UI updates
+        chat_group = QtWidgets.QGroupBox("Chat")
+        chat_layout = QtWidgets.QVBoxLayout(chat_group)
+        left_layout.addWidget(chat_group, 1)
+        
+        header_row = QtWidgets.QHBoxLayout()
+        header_label = QtWidgets.QLabel("Kitchen Assistant")
+        header_label.setStyleSheet("font-weight: bold; font-size: 15px;")
+        header_row.addWidget(header_label)
+        header_row.addStretch(1)
+        chat_layout.addLayout(header_row)
+        
+        self.chat_history = QtWidgets.QTextEdit()
+        self.chat_history.setReadOnly(True)
+        # Ensure emoji fonts are preferred when available
+        self.chat_history.document().setDefaultStyleSheet(
+            """
+            .emoji { font-family: 'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji','DejaVu Sans',sans-serif; }
+            b { font-weight: 600; }
+            .user { color: #93C5FD; } /* light blue */
+            .assistant { color: #A78BFA; } /* lavender */
+            """
+        )
+        chat_layout.addWidget(self.chat_history, 1)
+        
+        input_row = QtWidgets.QHBoxLayout()
+        self.user_input = QtWidgets.QLineEdit()
+        send_btn = QtWidgets.QPushButton("Send")
+        send_btn.clicked.connect(self.send_message)
+        # Pressing Enter sends the message
+        self.user_input.returnPressed.connect(self.send_message)
+        input_row.addWidget(self.user_input, 1)
+        input_row.addWidget(send_btn)
+        chat_layout.addLayout(input_row)
+        
+        # Right panel (Status)
+        right_widget = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_widget)
+        status_group = QtWidgets.QGroupBox("Status & Activity")
+        status_layout = QtWidgets.QVBoxLayout(status_group)
+        right_layout.addWidget(status_group, 1)
+        # Ensure the right side (with checklist) starts wider
+        right_widget.setMinimumWidth(520)
+        
+        meta_form = QtWidgets.QGridLayout()
+        status_layout.addLayout(meta_form)
+        
+        meta_form.addWidget(QtWidgets.QLabel("Robot Status:"), 0, 0)
+        self.status_value_label = QtWidgets.QLabel("Unknown")
+        meta_form.addWidget(self.status_value_label, 0, 1)
+        
+        meta_form.addWidget(QtWidgets.QLabel("User Task:"), 1, 0)
+        self.current_user_task_label = QtWidgets.QLabel("-")
+        meta_form.addWidget(self.current_user_task_label, 1, 1)
+        
+        meta_form.addWidget(QtWidgets.QLabel("Executing:"), 2, 0)
+        self.current_executing_label = QtWidgets.QLabel("-")
+        meta_form.addWidget(self.current_executing_label, 2, 1)
+        
+        meta_form.addWidget(QtWidgets.QLabel("Next Step:"), 3, 0)
+        self.current_task_label = QtWidgets.QLabel("-")
+        meta_form.addWidget(self.current_task_label, 3, 1)
+        
+        # Checklist
+        checklist_container = QtWidgets.QWidget()
+        checklist_layout = QtWidgets.QVBoxLayout(checklist_container)
+        status_layout.addWidget(checklist_container)
+        
+        checklist_label = QtWidgets.QLabel("Checklist")
+        checklist_layout.addWidget(checklist_label)
+        self.task_tree = QtWidgets.QTreeWidget()
+        self.task_tree.setColumnCount(2)
+        self.task_tree.setHeaderLabels(["Done", "Task"])
+        self.task_tree.setRootIsDecorated(False)
+        self.task_tree.setUniformRowHeights(True)
+        # Make task column stretch and reasonably wide by default
+        self.task_tree.setColumnWidth(0, 60)
+        self.task_tree.setColumnWidth(1, 520)
+        self.task_tree.header().setStretchLastSection(True)
+        checklist_layout.addWidget(self.task_tree, 1)
+        
+        # Kitchen State
+        ks_group = QtWidgets.QGroupBox("Kitchen State")
+        ks_form = QtWidgets.QGridLayout(ks_group)
+        status_layout.addWidget(ks_group)
+        
+        self.ks_labels: Dict[str, QtWidgets.QLabel] = {
+            "cabinet_open": QtWidgets.QLabel("No"),
+            "lid_on_pot": QtWidgets.QLabel("Yes"),
+            "pineapple_in_pot": QtWidgets.QLabel("No"),
+            "salt_added": QtWidgets.QLabel("No")
+        }
+        row = 0
+        ks_form.addWidget(QtWidgets.QLabel("Cabinet Open:"), row, 0)
+        ks_form.addWidget(self.ks_labels["cabinet_open"], row, 1); row += 1
+        ks_form.addWidget(QtWidgets.QLabel("Lid On Pot:"), row, 0)
+        ks_form.addWidget(self.ks_labels["lid_on_pot"], row, 1); row += 1
+        ks_form.addWidget(QtWidgets.QLabel("Pineapple In Pot:"), row, 0)
+        ks_form.addWidget(self.ks_labels["pineapple_in_pot"], row, 1); row += 1
+        ks_form.addWidget(QtWidgets.QLabel("Salt Added:"), row, 0)
+        ks_form.addWidget(self.ks_labels["salt_added"], row, 1)
+        
+        # Buttons
+        btn_row = QtWidgets.QHBoxLayout()
+        status_layout.addLayout(btn_row)
+        refresh_btn = QtWidgets.QPushButton("Refresh Status")
+        refresh_btn.clicked.connect(self.refresh_status)
+        clear_btn = QtWidgets.QPushButton("Clear Checklist")
+        clear_btn.clicked.connect(self.clear_checklist)
+        btn_row.addStretch(1)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(clear_btn)
+        
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([500, 600])
+        
+        # Queues for thread-safe updates
         self.message_queue: "queue.Queue[str]" = queue.Queue()
         self.status_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self.plan_queue: "queue.Queue[List[Dict[str, Any]]]" = queue.Queue()
         self.exec_queue: "queue.Queue[str]" = queue.Queue()
-        
-        # Build layout: PanedWindow with left chat, right status
-        paned = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-        
-        left_frame = ttk.Frame(paned)
-        right_frame = ttk.Frame(paned, width=380)
-        paned.add(left_frame, weight=3)
-        paned.add(right_frame, weight=2)
-        
-        # Left: chat panel (container)
-        chat_container = ttk.Labelframe(left_frame, text="Chat", style="Section.TLabelframe")
-        chat_container.pack(fill=tk.BOTH, expand=True)
-        
-        header_row = ttk.Frame(chat_container)
-        header_row.pack(fill=tk.X, padx=12, pady=(12, 6))
-        ttk.Label(header_row, text="Kitchen Assistant", style="Title.TLabel").pack(side=tk.LEFT)
-        
-        # Chat history with scrollbar
-        chat_box_frame = ttk.Frame(chat_container)
-        chat_box_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        self.chat_history = tk.Text(chat_box_frame, wrap=tk.WORD, bg="#FFFFFF", relief=tk.FLAT,
-                                    font=("Inter", 11))
-        self.chat_history.configure(state=tk.DISABLED)
-        chat_scroll = ttk.Scrollbar(chat_box_frame, orient=tk.VERTICAL, command=self.chat_history.yview)
-        self.chat_history.configure(yscrollcommand=chat_scroll.set)
-        self.chat_history.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        chat_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Text tags for pretty chat
-        self.chat_history.tag_configure("user_prefix", foreground="#0B5FFF", font=("Inter", 11, "bold"))
-        self.chat_history.tag_configure("assistant_prefix", foreground="#6B7280", font=("Inter", 11, "bold"))
-        self.chat_history.tag_configure("user_text", foreground="#111827")
-        self.chat_history.tag_configure("assistant_text", foreground="#111827")
-        
-        # Input row
-        input_row = ttk.Frame(chat_container)
-        input_row.pack(fill=tk.X, padx=12, pady=(0, 12))
-        self.user_input = ttk.Entry(input_row)
-        self.user_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.user_input.bind("<Return>", lambda e: self.send_message())
-        ttk.Button(input_row, text="Send", style="Accent.TButton", command=self.send_message).pack(side=tk.LEFT, padx=8)
-        
-        # Right: status panel
-        status_container = ttk.Labelframe(right_frame, text="Status & Activity", style="Section.TLabelframe")
-        status_container.pack(fill=tk.BOTH, expand=True)
-        
-        # Status labels
-        meta_frame = ttk.Frame(status_container)
-        meta_frame.pack(fill=tk.X, padx=12, pady=(12, 6))
-        ttk.Label(meta_frame, text="Robot Status:", style="Subtitle.TLabel").grid(row=0, column=0, sticky="w")
-        self.status_value_var = tk.StringVar(value="Unknown")
-        ttk.Label(meta_frame, textvariable=self.status_value_var, font=("Inter", 11, "bold")).grid(row=0, column=1, sticky="w", padx=6)
-        
-        ttk.Label(meta_frame, text="User Task:", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.current_user_task_var = tk.StringVar(value="-")
-        ttk.Label(meta_frame, textvariable=self.current_user_task_var, foreground="#0B5FFF", font=("Inter", 11, "bold")).grid(row=1, column=1, sticky="w", padx=6, pady=(6, 0))
-
-        ttk.Label(meta_frame, text="Executing:", style="Subtitle.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.current_executing_var = tk.StringVar(value="-")
-        ttk.Label(meta_frame, textvariable=self.current_executing_var, font=("Inter", 11, "bold")).grid(row=2, column=1, sticky="w", padx=6, pady=(6, 0))
-        
-        ttk.Label(meta_frame, text="Next Step:", style="Subtitle.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        self.current_task_var = tk.StringVar(value="-")
-        ttk.Label(meta_frame, textvariable=self.current_task_var, font=("Inter", 11)).grid(row=3, column=1, sticky="w", padx=6, pady=(6, 0))
-        
-        # Checklist
-        checklist_frame = ttk.Frame(status_container)
-        checklist_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(6, 6))
-        ttk.Label(checklist_frame, text="Checklist", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
-        columns = ("done", "task")
-        self.task_tree = ttk.Treeview(checklist_frame, columns=columns, show="headings", height=10)
-        self.task_tree.heading("done", text="Done")
-        self.task_tree.heading("task", text="Task")
-        self.task_tree.column("done", width=60, anchor="center")
-        self.task_tree.column("task", anchor="w")
-        tree_scroll = ttk.Scrollbar(checklist_frame, orient=tk.VERTICAL, command=self.task_tree.yview)
-        self.task_tree.configure(yscrollcommand=tree_scroll.set)
-        self.task_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Kitchen State (below checklist)
-        ks_frame = ttk.Labelframe(status_container, text="Kitchen State", style="Section.TLabelframe")
-        ks_frame.pack(fill=tk.X, expand=False, padx=12, pady=(6, 12))
-        self.ks_vars = {
-            "cabinet_open": tk.StringVar(value="No")
-        ,   "lid_on_pot": tk.StringVar(value="Yes")
-        ,   "pineapple_in_pot": tk.StringVar(value="No")
-        ,   "salt_added": tk.StringVar(value="No")
-        }
-        row = 0
-        ttk.Label(ks_frame, text="Cabinet Open:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["cabinet_open"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Lid On Pot:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["lid_on_pot"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Pineapple In Pot:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["pineapple_in_pot"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
-        ttk.Label(ks_frame, text="Salt Added:", style="Subtitle.TLabel").grid(row=row, column=0, sticky="w")
-        ttk.Label(ks_frame, textvariable=self.ks_vars["salt_added"]).grid(row=row, column=1, sticky="w", padx=6)
-        
-        # Buttons
-        status_buttons = ttk.Frame(status_container)
-        status_buttons.pack(anchor="e", padx=12, pady=(0, 12))
-        ttk.Button(status_buttons, text="Refresh Status", command=self.refresh_status).pack(side=tk.LEFT, padx=5)
-        ttk.Button(status_buttons, text="Clear Checklist", command=self.clear_checklist).pack(side=tk.LEFT, padx=5)
+        self.stream_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        # Streaming state flags
+        self._stream_open: bool = False
+        self._stream_started: bool = False
+        self._stream_last_was_blank: bool = False
         
         # Instantiate bot with callbacks
         self.bot = GPTOSSChatBot(
@@ -659,51 +778,77 @@ class KitchenAssistantUI:
             on_tool_result=self._on_tool_result,
             on_status_update=self._on_status_update,
             on_plan_update=self._on_plan_update,
-            on_execute_start=self._on_execute_start
+            on_execute_start=self._on_execute_start,
+            on_assistant_stream=self._on_assistant_stream
         )
         
-        # Initial status load
+        # Initial status and kitchen state
         self.refresh_status()
-        
-        # Initialize kitchen state display with bot's default state
         self._update_kitchen_state_display(self.bot.kitchen_state)
         
-        # Poll queues for UI updates
-        self._poll_queues()
+        # Timer to poll queues
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._poll_queues)
+        self.timer.start(100)
+
+        # Dark theme stylesheet for the entire UI
+        self.setStyleSheet(
+            """
+            QWidget { background-color: #121212; color: #E5E7EB; }
+            QGroupBox { border: 1px solid #2A2A2A; border-radius: 6px; margin-top: 12px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #E5E7EB; }
+            QTextEdit, QLineEdit { background-color: #1E1E1E; color: #E5E7EB; border: 1px solid #2A2A2A; border-radius: 6px; }
+            /* Larger, emoji-capable font for chat */
+            QTextEdit { font-size: 15px; font-family: 'Inter','Segoe UI','Noto Sans','DejaVu Sans','Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
+            QLineEdit { font-size: 14px; font-family: 'Inter','Segoe UI','Noto Sans','DejaVu Sans',sans-serif; }
+            QPushButton { background-color: #2563EB; color: #FFFFFF; border: none; padding: 6px 10px; border-radius: 6px; }
+            QPushButton:hover { background-color: #1D4ED8; }
+            QTreeWidget { background-color: #1E1E1E; border: 1px solid #2A2A2A; border-radius: 6px; }
+            QHeaderView::section { background-color: #1F2937; color: #E5E7EB; padding: 6px; border: none; }
+            QScrollBar:vertical { background: #1E1E1E; width: 10px; margin: 0; }
+            QScrollBar::handle:vertical { background: #374151; min-height: 24px; border-radius: 5px; }
+            QScrollBar::handle:vertical:hover { background: #4B5563; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            """
+        )
+        
+    def _fmt_bool(self, v: Any) -> str:
+        if isinstance(v, bool):
+            return "Yes" if v else "No"
+        if v is None:
+            return "-"
+        return str(v)
     
     def _update_kitchen_state_display(self, kitchen_state: Dict[str, Any]):
-        """Update kitchen state display with given state"""
-        def fmt(v):
-            if isinstance(v, bool):
-                return "Yes" if v else "No"
-            if v is None:
-                return "-"
-            return str(v)
         for key in ("cabinet_open", "lid_on_pot", "pineapple_in_pot", "salt_added"):
-            if key in self.ks_vars:
-                self.ks_vars[key].set(fmt(kitchen_state.get(key)))
+            if key in self.ks_labels:
+                self.ks_labels[key].setText(self._fmt_bool(kitchen_state.get(key)))
     
     def append_chat(self, text: str, who: str):
-        self.chat_history.configure(state=tk.NORMAL)
         if who == "user":
-            self.chat_history.insert(tk.END, "You: ", ("user_prefix",))
-            self.chat_history.insert(tk.END, f"{text}\n", ("user_text",))
+            # Blue person emoji for user
+            self.chat_history.append(f"<span class='user'><b><span class='emoji'>👤</span> You:</b> {self._escape_html(text)}</span>")
         else:
-            self.chat_history.insert(tk.END, "Assistant: ", ("assistant_prefix",))
-            self.chat_history.insert(tk.END, f"{text}\n", ("assistant_text",))
-        self.chat_history.see(tk.END)
-        self.chat_history.configure(state=tk.DISABLED)
+            # Robot emoji for assistant
+            self.chat_history.append(f"<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> {self._escape_html(text)}</span>")
+    
+    def _escape_html(self, s: str) -> str:
+        return (s
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
     
     def render_plan(self, tasks: List[Dict[str, Any]]):
-        for item in self.task_tree.get_children():
-            self.task_tree.delete(item)
+        self.task_tree.clear()
         for t in tasks:
             mark = "☑" if t.get("done") else "☐"
-            self.task_tree.insert("", tk.END, iid=str(t.get("id")), values=(mark, t.get("title", "")))
+            item = QtWidgets.QTreeWidgetItem([mark, t.get("title", "")])
+            self.task_tree.addTopLevelItem(item)
+        self.task_tree.resizeColumnToContents(0)
     
     def clear_checklist(self):
-        for item in self.task_tree.get_children():
-            self.task_tree.delete(item)
+        self.task_tree.clear()
     
     def refresh_status(self):
         def worker():
@@ -711,21 +856,17 @@ class KitchenAssistantUI:
             self.status_queue.put(status)
         threading.Thread(target=worker, daemon=True).start()
     
-    def clear_status(self):
-        self.status_value_var.set("-")
-    
     def send_message(self):
-        text = self.user_input.get().strip()
+        text = self.user_input.text().strip()
         if not text:
             return
-        self.user_input.delete(0, tk.END)
+        self.user_input.clear()
         self.append_chat(text, who="user")
-        self.current_user_task_var.set(text)
-        self.current_executing_var.set("-")
+        self.current_user_task_label.setText(text)
+        self.current_executing_label.setText("-")
         
         def worker():
             reply = self.bot.chat(text)
-            # Do not enqueue reply here; the bot already enqueues via on_assistant_message
             _ = reply
         threading.Thread(target=worker, daemon=True).start()
     
@@ -733,11 +874,13 @@ class KitchenAssistantUI:
     def _on_assistant_message(self, message: str):
         self.message_queue.put(message)
     
+    def _on_assistant_stream(self, evt: Dict[str, Any]):
+        # evt: {type: 'start'|'delta'|'end', text?: str}
+        self.stream_queue.put(evt)
+    
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            # Do not hardcode task completion; the model should drive updates
-            # Optionally, the model can emit plan updates as assistant messages which we render
-            # Additionally, when a robot command succeeds, optimistically mark the next pending task as complete
+            # Optimistic update: mark next pending task complete on success
             try:
                 if isinstance(payload, dict) and payload.get("status") == "success":
                     next_task = next((t for t in self.bot.task_list if not t.get("done")), None)
@@ -746,20 +889,17 @@ class KitchenAssistantUI:
             except Exception:
                 pass
         elif name == "get_robot_status":
-            # status panel handled in _on_status_update
             pass
-
+    
     def _on_status_update(self, payload: Dict[str, Any]):
         self.status_queue.put(payload)
-        # If kitchen_state present, update labels
         if isinstance(payload, dict) and payload.get("status") == "success" and payload.get("kitchen_state") is not None:
             self._update_kitchen_state_display(payload.get("kitchen_state", {}))
     
     def _on_plan_update(self, plan: List[Dict[str, Any]]):
         self.plan_queue.put(plan)
-
+    
     def _on_execute_start(self, instruction: str):
-        # Called from bot thread; queue to UI thread
         self.exec_queue.put(instruction)
     
     def _poll_queues(self):
@@ -772,21 +912,37 @@ class KitchenAssistantUI:
         except queue.Empty:
             pass
         
+        # Streaming assistant chunks
+        try:
+            while True:
+                evt = self.stream_queue.get_nowait()
+                if not isinstance(evt, dict):
+                    continue
+                etype = evt.get("type")
+                if etype == "start":
+                    self._streaming_begin()
+                elif etype == "delta":
+                    self._streaming_append(evt.get("text", ""))
+                elif etype == "end":
+                    self._streaming_end()
+        except queue.Empty:
+            pass
+        
         # Status updates
         try:
             while True:
                 status = self.status_queue.get_nowait()
-                # Update label with a concise status string
                 if isinstance(status, dict) and status.get("status") == "success":
                     robot_status = status.get("robot_status")
                     if isinstance(robot_status, str):
-                        self.status_value_var.set(robot_status[:64] + ("…" if len(robot_status) > 64 else ""))
+                        trimmed = robot_status[:64] + ("…" if len(robot_status) > 64 else "")
+                        self.status_value_label.setText(trimmed)
                     else:
-                        self.status_value_var.set("OK")
+                        self.status_value_label.setText("OK")
                 elif isinstance(status, dict) and status.get("status") == "error":
-                    self.status_value_var.set(f"Error: {status.get('error')}")
+                    self.status_value_label.setText(f"Error: {status.get('error')}")
                 else:
-                    self.status_value_var.set("Unknown")
+                    self.status_value_label.setText("Unknown")
         except queue.Empty:
             pass
         
@@ -797,7 +953,7 @@ class KitchenAssistantUI:
                 if isinstance(plan, list):
                     self.render_plan(plan)
                     next_task = next((t for t in plan if not t.get("done")), None)
-                    self.current_task_var.set(next_task["title"] if next_task else "All tasks complete")
+                    self.current_task_label.setText(next_task["title"] if next_task else "All tasks complete")
         except queue.Empty:
             pass
         
@@ -805,17 +961,67 @@ class KitchenAssistantUI:
         try:
             while True:
                 instr = self.exec_queue.get_nowait()
-                self.current_executing_var.set(instr)
+                self.current_executing_label.setText(instr)
         except queue.Empty:
             pass
-        
-        self.root.after(100, self._poll_queues)
 
-# Interactive Chat Interface (Tkinter)
+    def _streaming_begin(self):
+        # Only mark stream open; defer inserting prefix until first delta arrives
+        self._stream_open = True
+        self._stream_started = False
+
+    def _streaming_append(self, text: str):
+        if not text:
+            return
+        # Sanitize chunk: on first chunk, strip leading whitespace/newlines
+        if not self._stream_started:
+            text = text.lstrip()
+            if not text:
+                return
+        # Collapse excessive blank lines to avoid large gaps
+        text = text.replace("\r\n", "\n")
+        # If the chunk is only whitespace/newlines, limit to a single newline
+        if text.strip() == "":
+            if self._stream_last_was_blank:
+                return
+            text = "\n"
+            self._stream_last_was_blank = True
+        else:
+            # Reduce any 3+ consecutive newlines inside the chunk to a single blank line
+            while "\n\n\n" in text:
+                text = text.replace("\n\n\n", "\n\n")
+            self._stream_last_was_blank = False
+        cursor = self.chat_history.textCursor()
+        cursor.movePosition(cursor.End)
+        if not self._stream_started:
+            # Ensure assistant starts on a new line and insert prefix once
+            cursor.insertBlock()
+            html = "<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> "
+            cursor.insertHtml(html)
+            self._stream_started = True
+        cursor.insertText(text)
+        self.chat_history.setTextCursor(cursor)
+        self.chat_history.ensureCursorVisible()
+
+    def _streaming_end(self):
+        if self._stream_started:
+            cursor = self.chat_history.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.insertHtml("</span>")
+            cursor.insertBlock()
+            self.chat_history.setTextCursor(cursor)
+            self.chat_history.ensureCursorVisible()
+        # Reset flags regardless
+        self._stream_open = False
+        self._stream_started = False
+        self._stream_last_was_blank = False
+
+# Interactive Chat Interface (PyQt5)
 def main():
-    root = tk.Tk()
-    app = KitchenAssistantUI(root)
-    root.mainloop()
+    app = QtWidgets.QApplication([])
+    window = KitchenAssistantUI()
+    window.show()
+    app.exec()
 
 if __name__ == "__main__":
     main()
