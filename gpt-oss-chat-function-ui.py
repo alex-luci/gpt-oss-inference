@@ -11,13 +11,24 @@ from PyQt5 import QtWidgets, QtCore
 
 # ----- Logging helpers -----
 VERBOSE_LOGS = False
+ACTIVITY_LOG_HOOK: Optional[Callable[[str], None]] = None
 
 def _log_debug(message: str):
     if VERBOSE_LOGS:
         print(message)
+        if ACTIVITY_LOG_HOOK:
+            try:
+                ACTIVITY_LOG_HOOK(message)
+            except Exception:
+                pass
 
 def _log_info(message: str):
     print(message)
+    if ACTIVITY_LOG_HOOK:
+        try:
+            ACTIVITY_LOG_HOOK(message)
+        except Exception:
+            pass
 
 
 def send(cmd):
@@ -101,10 +112,11 @@ You can execute robot actions and manage your own state using these functions:
 ## Your Responsibilities
 1. **Plan Creation**: ALWAYS create a plan first using create_plan() when user requests a task
 2. **Plan Validation**: AFTER creating a plan, call review_plan() and proceed ONLY if approved. If not approved, revise and re‑review until approved
-3. **State Tracking**: Maintain and update kitchen state as you work
-4. **Task Management**: Mark tasks complete as you finish them
-5. **Adaptive Execution**: Modify plans based on real conditions
-6. **Status Communication**: Keep the user informed of progress
+3. **Autonomous Execution**: Do NOT wait for user confirmation; once the plan is approved, immediately execute it end‑to‑end
+4. **State Tracking**: Maintain and update kitchen state as you work
+5. **Task Management**: Mark tasks complete as you finish them
+6. **Adaptive Execution**: Modify plans based on real conditions
+7. **Status Communication**: Keep the user informed of progress (avoid internal tool logs; communicate only meaningful updates)
 
 ## Available Robot Actions
 - "Open the left cabinet door"
@@ -835,12 +847,17 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         self.current_task_label = QtWidgets.QLabel("-")
         meta_form.addWidget(self.current_task_label, 3, 1)
         
+        meta_form.addWidget(QtWidgets.QLabel("Plan Approved:"), 4, 0)
+        self.plan_approved_label = QtWidgets.QLabel("-")
+        meta_form.addWidget(self.plan_approved_label, 4, 1)
+        
         # Checklist
         checklist_container = QtWidgets.QWidget()
         checklist_layout = QtWidgets.QVBoxLayout(checklist_container)
-        status_layout.addWidget(checklist_container)
+        status_layout.addWidget(checklist_container, 1)
         
         checklist_label = QtWidgets.QLabel("Checklist")
+        checklist_label.setStyleSheet("font-weight: 600; font-size: 14px;")
         checklist_layout.addWidget(checklist_label)
         self.task_tree = QtWidgets.QTreeWidget()
         self.task_tree.setColumnCount(2)
@@ -888,6 +905,14 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         btn_row.addWidget(refresh_btn)
         btn_row.addWidget(clear_btn)
         
+        # Activity Log
+        activity_group = QtWidgets.QGroupBox("Activity Log")
+        activity_layout = QtWidgets.QVBoxLayout(activity_group)
+        self.activity_log = QtWidgets.QTextEdit()
+        self.activity_log.setReadOnly(True)
+        activity_layout.addWidget(self.activity_log)
+        status_layout.addWidget(activity_group, 1)
+        
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
         splitter.setSizes([500, 600])
@@ -898,10 +923,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         self.plan_queue: "queue.Queue[List[Dict[str, Any]]]" = queue.Queue()
         self.exec_queue: "queue.Queue[str]" = queue.Queue()
         self.stream_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-        # Streaming state flags
-        self._stream_open: bool = False
-        self._stream_started: bool = False
-        self._stream_last_was_blank: bool = False
+        self.log_queue: "queue.Queue[str]" = queue.Queue()
         
         # Instantiate bot with callbacks
         self.bot = GPTOSSChatBot(
@@ -927,7 +949,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             """
             QWidget { background-color: #121212; color: #E5E7EB; }
             QGroupBox { border: 1px solid #2A2A2A; border-radius: 6px; margin-top: 12px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #E5E7EB; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #E5E7EB; font-weight: 700; font-size: 14px; }
             QTextEdit, QLineEdit { background-color: #1E1E1E; color: #E5E7EB; border: 1px solid #2A2A2A; border-radius: 6px; }
             /* Larger, emoji-capable font for chat */
             QTextEdit { font-size: 15px; font-family: 'Inter','Segoe UI','Noto Sans','DejaVu Sans','Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
@@ -942,6 +964,15 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             """
         )
+        # Make left group title bold too
+        chat_group.setStyleSheet("QGroupBox::title { font-weight: 700; font-size: 14px; }")
+        status_group.setStyleSheet("QGroupBox::title { font-weight: 700; font-size: 14px; }")
+        ks_group.setStyleSheet("QGroupBox::title { font-weight: 700; font-size: 14px; }")
+        activity_group.setStyleSheet("QGroupBox::title { font-weight: 700; font-size: 14px; }")
+
+        # Connect activity log sink
+        global ACTIVITY_LOG_HOOK
+        ACTIVITY_LOG_HOOK = lambda m: self.log_queue.put(m)
         
     def _fmt_bool(self, v: Any) -> str:
         if isinstance(v, bool):
@@ -1011,7 +1042,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
     
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            # Optimistic update: mark next pending task complete on success
+            # Optimistic update: mark the next pending task complete on success
             try:
                 if isinstance(payload, dict) and payload.get("status") == "success":
                     next_task = next((t for t in self.bot.task_list if not t.get("done")), None)
@@ -1020,6 +1051,15 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             except Exception:
                 pass
         elif name == "get_robot_status":
+            pass
+        elif name == "review_plan":
+            try:
+                approved = bool(payload.get("approved")) if isinstance(payload, dict) else False
+                self.plan_approved_label.setText("Yes" if approved else "No")
+                self.plan_approved_label.setStyleSheet(f"color: {'#10B981' if approved else '#F59E0B'};")
+            except Exception:
+                pass
+        else:
             pass
     
     def _on_status_update(self, payload: Dict[str, Any]):
@@ -1093,6 +1133,16 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             while True:
                 instr = self.exec_queue.get_nowait()
                 self.current_executing_label.setText(instr)
+        except queue.Empty:
+            pass
+        
+        # Activity log updates
+        try:
+            while True:
+                log = self.log_queue.get_nowait()
+                if isinstance(log, str):
+                    self.activity_log.append(log)
+                    self.activity_log.ensureCursorVisible()
         except queue.Empty:
             pass
 

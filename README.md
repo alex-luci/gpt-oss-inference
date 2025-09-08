@@ -1,196 +1,65 @@
-# GPT-OSS Kitchen Assistant UI
+# GPT‑OSS Kitchen Assistant (PyQt UI)
 
-A fully autonomous kitchen assistant powered by GPT-OSS with real-time task planning, execution tracking, and state management. The application provides a modern Tkinter interface for interacting with a local GPT-OSS model that can control a kitchen robot through function calling.
+An autonomous, tool‑using kitchen assistant that plans, validates, and executes robot actions via GPT‑OSS with gr00t. The UI is built with PyQt5 and communicates with the local GPT‑OSS chat API and robot socket.
 
-## Features
+## What’s in this repo
+- `gpt-oss-chat-function-ui.py`: PyQt UI application and the `GPTOSSChatBot` backend
+- Minimal project state; no extra scripts or assets
 
-- **GPT-OSS Integration**: Communicates with a local GPT-OSS model (e.g., Ollama) at `http://localhost:11434`
-- **Function Calling**: GPT-OSS can call 6 different functions for complete kitchen automation
-- **Autonomous Planning**: GPT-OSS creates its own task plans and executes them step-by-step
-- **Real-time State Management**: Tracks kitchen state (cabinet, lid, pineapple, salt) with live updates
-- **Interactive UI**: Modern chat interface with status panels, task checklist, and kitchen state display
-- **Thread-safe Updates**: Smooth UI updates using background threads and queues
-- **No Hardcoded Logic**: GPT-OSS has complete autonomy in planning, execution, and state management
+## Key capabilities
+- Fully autonomous flow (no hardcoded task logic):
+  - Creates a plan (`create_plan`)
+  - Validates plan with an AI-only reviewer (`review_plan`)
+  - Executes approved plan with canonical robot commands (`execute_robot_command`)
+  - Tracks and updates kitchen state (`update_kitchen_state`)
+  - Marks tasks complete (`mark_task_complete`)
+- Canonical command enforcement: exact phrases only (no paraphrasing) so gr00t understands actions.
+- Streaming assistant messages with smooth, throttled updates and emoji-friendly rendering.
+- Activity Log panel showing concise, high-signal runtime logs (tools, steps, review results, HTTP fallback notes).
+- Dark theme UI with:
+  - Chat (left pane)
+  - Status & Activity (right pane): Robot Status, User Task, Executing, Next Step, Plan Approved
+  - Checklist (half height) with widening and elided long texts
+  - Kitchen State with human-friendly Yes/No formatting
+  - Buttons: Refresh Status, Clear Checklist
+  - Activity Log (under buttons)
+- No tool logs in chat; only meaningful assistant messages are shown to the user.
 
-## Available Functions
+## Autonomous lifecycle
+1. User requests a task (e.g., “make a pineapple smoothie”).
+2. Assistant generates a plan using canonical robot commands only.
+3. Assistant calls `review_plan`:
+   - The reviewer approves if ordering and preconditions are valid and all steps are canonical.
+   - If not approved, the reviewer returns a minimal revision (reorder/insert/remove only).
+4. Assistant executes the approved plan end-to-end without asking for “go/yes”.
+5. After each action: state updates and checklist progression.
+6. Assistant communicates progress and completion succinctly.
 
-GPT-OSS can call these functions to control the kitchen:
+## Canonical robot commands
+The assistant must use exactly these phrases:
+- "Open the left cabinet door"
+- "Close the left cabinet door"
+- "Take off the lid from the gray recipient and place it on the counter"
+- "Pick up the lid from the counter and put it on the gray recipient"
+- "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
+- "Put salt in the gray recipient"
 
-1. **`execute_robot_command(language_instruction, use_angle_stop=True)`**
-   - Controls the robot with natural language instructions
-   - Fixed to 150 actions per command for consistent execution
-   - Supports all kitchen operations (open/close cabinet, handle lid, place pineapple, add salt)
+## Model tools (function calling)
+- `execute_robot_command(language_instruction, use_angle_stop=True)`
+- `get_robot_status()`
+- `update_kitchen_state(state_updates)`
+- `mark_task_complete(task_id)`
+- `get_current_plan()`
+- `create_plan(tasks)`
+- `review_plan(instructions?)`
 
-2. **`get_robot_status()`**
-   - Checks current robot status and connectivity
+## Design principles
+- AI-only validation: no hardcoded guards; planning and review are delegated to the model.
+- Canonical action contract: exact strings ensure gr00t can perform every step.
+- Concise logging: terminal and Activity Log prioritize signal over noise.
+- Robust streaming: newlines are deduplicated; rendering avoids blank gaps.
 
-3. **`update_kitchen_state(state_updates)`**
-   - Updates the internal kitchen state (cabinet_open, lid_on_pot, pineapple_in_pot, salt_added)
-   - Triggers real-time UI updates
-
-4. **`mark_task_complete(task_id)`**
-   - Marks specific tasks as completed in the checklist
-   - Updates the task list display
-
-5. **`get_current_plan()`**
-   - Retrieves the current task plan and kitchen state
-   - Useful for GPT-OSS to check its progress
-
-6. **`create_plan(tasks)`**
-   - Creates a new task plan from a list of task descriptions
-   - Displays tasks in the checklist with checkboxes
-   - Required before executing any kitchen tasks
-
-## UI Components
-
-### Chat Panel (Left)
-- **Chat History**: Scrollable conversation with GPT-OSS
-- **Input Field**: Type messages and press Enter or click Send
-- **Styled Messages**: User messages in blue, assistant responses in gray
-
-### Status Panel (Right)
-- **Robot Status**: Current robot connectivity and status
-- **User Task**: The current user request being processed
-- **Executing**: The specific robot command currently running
-- **Next Step**: The next pending task from the plan
-
-### Task Checklist
-- **Dynamic Tasks**: Shows tasks created by GPT-OSS via `create_plan()`
-- **Progress Tracking**: Checkboxes (☐/☑) show completion status
-- **Clean Descriptions**: Displays only task descriptions, not JSON objects
-
-### Kitchen State Display
-- **Cabinet Open**: Yes/No status
-- **Lid On Pot**: Yes/No status  
-- **Pineapple In Pot**: Yes/No status
-- **Salt Added**: Yes/No status
-- **Real-time Updates**: Changes as GPT-OSS calls `update_kitchen_state()`
-
-## Requirements
-
-- **Python 3.8+**
-- **Dependencies**: `requests` (for GPT-OSS API calls)
-- **GPT-OSS Server**: Running at `http://localhost:11434` (Ollama-compatible)
-- **Robot Server**: Listening on `localhost:7000` (TCP socket for robot commands)
-
-## Usage
-
-1. Run the application:
-```bash
-python gpt-oss-chat-function-ui.py
-```
-
-2. Type a kitchen task request, for example:
-   - "Make a pineapple smoothie"
-   - "Add salt to the pot"
-   - "Open the cabinet and get the pineapple"
-
-3. Watch GPT-OSS:
-   - Create a task plan
-   - Execute robot commands in the correct order
-   - Update kitchen state after each action
-   - Mark tasks complete as they finish
-   - Adapt if conditions change
-
-## How It Works (Autonomous Mode)
-
-### GPT-OSS Autonomy
-The core `GPTOSSChatBot` class provides complete autonomy to GPT-OSS:
-
-1. **Plan Creation**: GPT-OSS must call `create_plan()` before executing any tasks
-2. **State Management**: GPT-OSS manages its own `kitchen_state` using `update_kitchen_state()`
-3. **Task Execution**: GPT-OSS calls `execute_robot_command()` for each robot action
-4. **Progress Tracking**: GPT-OSS calls `mark_task_complete()` when tasks finish
-5. **Adaptive Planning**: GPT-OSS can modify plans based on real conditions
-
-### No Hardcoded Logic
-The application contains **zero hardcoded logic**:
-- No preconditions or guards in the code
-- No automatic task sequencing
-- No heuristic state updates
-- No forced step ordering
-- GPT-OSS makes all decisions autonomously
-
-### Physical Constraints
-GPT-OSS is aware of these constraints through its system prompt:
-- Cannot access pineapple unless cabinet door is open
-- Cannot put pineapple in pot if lid is on pot
-- Cannot add salt if lid is on pot
-- Must close cabinet door after removing items
-- Must put lid back on pot at the end (for smoothie tasks)
-
-### Example Workflow
-1. User: "Make a pineapple smoothie"
-2. GPT-OSS calls `create_plan()` with 5 tasks
-3. GPT-OSS calls `execute_robot_command("Open the left cabinet door")`
-4. GPT-OSS calls `update_kitchen_state({"cabinet_open": True})`
-5. GPT-OSS calls `mark_task_complete(1)`
-6. GPT-OSS continues with next task...
-7. UI updates in real-time showing progress
-
-## Architecture
-
-### GPTOSSChatBot Class
-- **Function Registry**: Maps function names to Python methods
-- **State Management**: Maintains `kitchen_state` and `task_list`
-- **API Communication**: Handles GPT-OSS API calls with tool calling
-- **Error Handling**: Robust error handling for all function calls
-
-### KitchenAssistantUI Class
-- **Thread-safe Updates**: Uses queues for UI updates from background threads
-- **Real-time Display**: Updates checklist, status, and kitchen state instantly
-- **Modern Styling**: Clean, professional UI with proper typography and colors
-- **Responsive Layout**: PanedWindow with chat and status panels
-
-### Communication Flow
-```
-User Input → GPT-OSS API → Function Calls → Robot Commands → State Updates → UI Updates
-```
-
-## Customization
-
-### System Prompt
-Edit `_get_system_prompt()` to modify GPT-OSS behavior, add constraints, or change instructions.
-
-### Function Tools
-Modify the `tools` array in `_call_gpt_oss()` to add new functions or change existing ones.
-
-### UI Styling
-Update the `ttk.Style` configurations in `KitchenAssistantUI.__init__()` to change colors, fonts, or layout.
-
-### Robot Integration
-Modify the `send()` function to integrate with different robot control protocols or APIs.
-
-## Troubleshooting
-
-### GPT-OSS Connection Issues
-- Ensure Ollama is running: `ollama serve`
-- Check model availability: `ollama list`
-- Verify API endpoint: `http://localhost:11434`
-
-### Robot Connection Issues
-- Ensure robot server is running on port 7000
-- Check robot server logs for connection attempts
-- Verify JSON command format matches robot expectations
-
-### UI Issues
-- Check Python version (3.8+ required)
-- Ensure tkinter is available: `python -m tkinter`
-- Verify all dependencies are installed
-
-## Development
-
-The codebase is structured for easy extension:
-
-- **Add New Functions**: Add methods to `GPTOSSChatBot` and register them in `available_functions`
-- **Add UI Components**: Extend `KitchenAssistantUI` with new panels or displays
-- **Modify Robot Protocol**: Update the `send()` function for different robot APIs
-- **Enhance State Management**: Add new state variables and UI displays
-
-## License
-
-Experimental/educational use only.
-
-## Contributing
-
-This is a focused, single-purpose application. For major changes, consider creating a fork or separate repository.
+## Notes
+- Robot socket sending in `send()` can be toggled; currently the raw socket code is present but commented for safety. Enable as needed to control a real robot.
+- If the streaming endpoint returns no content, a non-streaming fallback is attempted and mirrored into the UI for consistency.
+- The Plan Approved status reflects the latest `review_plan` result and gates execution behavior as instructed in the system prompt.
