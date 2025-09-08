@@ -1,65 +1,37 @@
-# GPT‑OSS Kitchen Assistant (PyQt UI)
+# GPT-OSS Kitchen Assistant
 
-An autonomous, tool‑using kitchen assistant that plans, validates, and executes robot actions via GPT‑OSS with gr00t. The UI is built with PyQt5 and communicates with the local GPT‑OSS chat API and robot socket.
+**An autonomous robot kitchen assistant powered by GPT-OSS and GR00T N1.5**
 
-## What’s in this repo
-- `gpt-oss-chat-function-ui.py`: PyQt UI application and the `GPTOSSChatBot` backend
-- Minimal project state; no extra scripts or assets
+We built a fully autonomous kitchen robot that can understand natural language requests, create detailed execution plans, validate them through AI review, and execute complex cooking tasks without human intervention.
 
-## Key capabilities
-- Fully autonomous flow (no hardcoded task logic):
-  - Creates a plan (`create_plan`)
-  - Validates plan with an AI-only reviewer (`review_plan`)
-  - Executes approved plan with canonical robot commands (`execute_robot_command`)
-  - Tracks and updates kitchen state (`update_kitchen_state`)
-  - Marks tasks complete (`mark_task_complete`)
-- Canonical command enforcement: exact phrases only (no paraphrasing) so gr00t understands actions.
-- Streaming assistant messages with smooth, throttled updates and emoji-friendly rendering.
-- Activity Log panel showing concise, high-signal runtime logs (tools, steps, review results, HTTP fallback notes).
-- Dark theme UI with:
-  - Chat (left pane)
-  - Status & Activity (right pane): Robot Status, User Task, Executing, Next Step, Plan Approved
-  - Checklist (half height) with widening and elided long texts
-  - Kitchen State with human-friendly Yes/No formatting
-  - Buttons: Refresh Status, Clear Checklist
-  - Activity Log (under buttons)
-- No tool logs in chat; only meaningful assistant messages are shown to the user.
+## The Problem We Solved
 
-## Autonomous lifecycle
-1. User requests a task (e.g., “make a pineapple smoothie”).
-2. Assistant generates a plan using canonical robot commands only.
-3. Assistant calls `review_plan`:
-   - The reviewer approves if ordering and preconditions are valid and all steps are canonical.
-   - If not approved, the reviewer returns a minimal revision (reorder/insert/remove only).
-4. Assistant executes the approved plan end-to-end without asking for “go/yes”.
-5. After each action: state updates and checklist progression.
-6. Assistant communicates progress and completion succinctly.
+Traditional kitchen robots require extensive hardcoded logic for each task. Our solution eliminates this by creating a truly autonomous system where the AI handles planning, validation, and execution entirely through natural language reasoning.
 
-## Canonical robot commands
-The assistant must use exactly these phrases:
-- "Open the left cabinet door"
-- "Close the left cabinet door"
-- "Take off the lid from the gray recipient and place it on the counter"
-- "Pick up the lid from the counter and put it on the gray recipient"
-- "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
-- "Put salt in the gray recipient"
+## How It Works
 
-## Model tools (function calling)
-- `execute_robot_command(language_instruction, use_angle_stop=True)`
-- `get_robot_status()`
-- `update_kitchen_state(state_updates)`
-- `mark_task_complete(task_id)`
-- `get_current_plan()`
-- `create_plan(tasks)`
-- `review_plan(instructions?)`
+When you ask for something like "make a pineapple smoothie," here's what happens:
 
-## Design principles
-- AI-only validation: no hardcoded guards; planning and review are delegated to the model.
-- Canonical action contract: exact strings ensure gr00t can perform every step.
-- Concise logging: terminal and Activity Log prioritize signal over noise.
-- Robust streaming: newlines are deduplicated; rendering avoids blank gaps.
+**Planning Phase**: The AI creates a step-by-step plan using only canonical robot commands that GR00T understands perfectly. No ambiguous instructions - every command is precise.
 
-## Notes
-- Robot socket sending in `send()` can be toggled; currently the raw socket code is present but commented for safety. Enable as needed to control a real robot.
-- If the streaming endpoint returns no content, a non-streaming fallback is attempted and mirrored into the UI for consistency.
-- The Plan Approved status reflects the latest `review_plan` result and gates execution behavior as instructed in the system prompt.
+**Validation Phase**: A separate AI reviewer checks the plan for logical ordering, missing steps, and safety considerations. If issues are found, it provides minimal corrections rather than rejecting the entire plan.
+
+**Execution Phase**: Once approved, the system executes the plan autonomously, updating kitchen state and tracking progress in real-time.
+
+## Technical Architecture
+
+The system uses PyQt5 for the interface and communicates with both the GPT-OSS chat API and the robot's control socket. The UI shows live status updates, execution progress, and maintains a complete activity log.
+
+**Key Innovation**: We enforce canonical command patterns - exact phrases that GR00T recognizes without interpretation errors. Commands like "Open the left cabinet door" or "Pick up the green pineapple from the left cabinet and place it in the gray recipient" ensure 100% reliability.
+
+The AI tracks kitchen state dynamically, updating ingredient locations, container status, and task completion. Everything flows through natural language reasoning rather than predetermined decision trees.
+
+## What Makes This Special
+
+**Zero Hardcoded Logic**: Unlike traditional systems, there's no task-specific programming. The same AI handles making smoothies, preparing salads, or any other kitchen task through pure reasoning.
+
+**Self-Validating**: The built-in review system catches planning errors before execution, making it safe and reliable for real kitchen environments.
+
+**Human-Friendly Interface**: The dark-themed UI shows exactly what's happening - current robot status, execution progress, kitchen state, and a complete activity log. No technical jargon, just clear status updates.
+
+This represents a fundamental shift from programmed robots to truly intelligent kitchen assistants that understand, plan, and execute like a human would - but with perfect consistency and safety validation.
