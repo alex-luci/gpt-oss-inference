@@ -22,13 +22,13 @@ def _log_info(message: str):
 
 def send(cmd):
     """Function that GPT-OSS will call"""
-    s = socket.socket()
-    s.connect(("localhost", 7000))
-    s.send(json.dumps(cmd).encode("utf-8"))
-    resp = s.recv(65536).decode("utf-8")
-    s.close()
+    # s = socket.socket()
+    # s.connect(("localhost", 7000))
+    # s.send(json.dumps(cmd).encode("utf-8"))
+    # resp = s.recv(65536).decode("utf-8")
+    # s.close()
     _log_debug(f"[Robot] send {cmd}")
-    return resp
+    # return resp
 
 class GPTOSSChatBot:
     def __init__(self,
@@ -46,7 +46,8 @@ class GPTOSSChatBot:
             "update_kitchen_state": self.update_kitchen_state,
             "mark_task_complete": self.mark_task_complete,
             "get_current_plan": self.get_current_plan,
-            "create_plan": self.create_plan
+            "create_plan": self.create_plan,
+            "review_plan": self.review_plan
         }
         
         # UI callbacks
@@ -87,13 +88,23 @@ You can execute robot actions and manage your own state using these functions:
 - mark_task_complete(task_id): Mark tasks as complete in your plan
 - get_current_plan(): Review your current plan and state
 - create_plan(tasks): Create a new task plan for the user
+- review_plan(): Ask an independent review to validate or revise your plan before execution
+
+## Canonical Robot Commands (MUST use exact text; DO NOT paraphrase)
+- "Open the left cabinet door"
+- "Close the left cabinet door"
+- "Take off the lid from the gray recipient and place it on the counter"
+- "Pick up the lid from the counter and put it on the gray recipient"
+- "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
+- "Put salt in the gray recipient"
 
 ## Your Responsibilities
 1. **Plan Creation**: ALWAYS create a plan first using create_plan() when user requests a task
-2. **State Tracking**: Maintain and update kitchen state as you work
-3. **Task Management**: Mark tasks complete as you finish them
-4. **Adaptive Execution**: Modify plans based on real conditions
-5. **Status Communication**: Keep the user informed of progress
+2. **Plan Validation**: AFTER creating a plan, call review_plan() and proceed ONLY if approved. If not approved, revise and re‑review until approved
+3. **State Tracking**: Maintain and update kitchen state as you work
+4. **Task Management**: Mark tasks complete as you finish them
+5. **Adaptive Execution**: Modify plans based on real conditions
+6. **Status Communication**: Keep the user informed of progress
 
 ## Available Robot Actions
 - "Open the left cabinet door"
@@ -113,7 +124,8 @@ You can execute robot actions and manage your own state using these functions:
 ## Your Autonomous Process
 1. **Analyze** user request and current state
 2. **Plan** by creating a task list using create_plan() - THIS IS REQUIRED
-3. **Respect physical constraints**: Do not attempt to do something that is physically impossible
+3. **Validate** the plan using review_plan(); if not approved, revise and re‑validate
+4. **Respect physical constraints**: Do not attempt to do something that is physically impossible
 5. **Execute** each step using robot commands
 6. **Update** kitchen state after each action
 7. **Mark** tasks complete as you finish them
@@ -132,6 +144,8 @@ After completing a task: mark_task_complete(task_id)
 - **Be communicative**: Explain what you're doing and why
 - **Be state-aware**: Always update your understanding of the kitchen
 - **ALWAYS CREATE A PLAN FIRST**: Use create_plan() before executing any tasks
+- **VALIDATE THE PLAN**: Use review_plan() and only execute an approved plan
+- **USE CANONICAL COMMANDS**: When calling execute_robot_command, the language_instruction MUST be exactly one of the canonical commands above (no paraphrasing)
 - **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
 
 You have complete autonomy. Plan, execute, and manage everything yourself!"""
@@ -286,6 +300,96 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    def review_plan(self, instructions: Optional[str] = None):
+        """Ask the model to strictly review the current plan against the current kitchen_state and optionally revise it.
+        Returns a payload with approved, reasons, and optionally a revised plan that is applied to the UI.
+        """
+        try:
+            # Build a compact review prompt. No hardcoded rules beyond natural-language rubric.
+            rubric = (
+                "You are a strict plan validator for a kitchen robot. Review the proposed plan for physical feasibility, safety, and completeness, using the provided kitchen_state. "
+                "Only evaluate ordering and preconditions; do NOT change the wording of any robot action. "
+                "If the plan is valid, return approved=true. If not, return approved=false and provide a revised plan that fixes issues. "
+                "Do NOT paraphrase robot actions: any robot action step MUST use the exact canonical command strings; you may only reorder, insert, or remove canonical steps. "
+                "Acceptance criteria for approval (all must hold): (1) Cabinet is opened before any action that takes items from it and remains open until those actions are complete; (2) Lid is removed before any action that requires access to the gray recipient's contents; (3) Lid is restored at the end when appropriate; (4) Cabinet is closed at the end if it was opened; (5) All robot actions are from the canonical command list and wording is unchanged. "
+                "Prefer minimal changes, preserve intent, and ensure steps are sequenced so preconditions are met before actions. "
+                "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
+            )
+            review_messages = [
+                {"role": "system", "content": rubric},
+                {"role": "user", "content": json.dumps({
+                    "kitchen_state": self.kitchen_state,
+                    "plan": self.task_list
+                })}
+            ]
+
+            payload = {"model": "gpt-oss:20b", "messages": review_messages, "stream": False}
+            resp = requests.post(self.gpt_oss_url, json=payload, timeout=60)
+            if resp.status_code != 200:
+                _log_info(f"[Review] HTTP {resp.status_code}")
+                return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.text}"}
+            parsed = self._parse_gpt_response(resp.text)
+            message = parsed.get("message", {})
+            content = message.get("content", "").strip()
+            try:
+                result = json.loads(content)
+            except Exception:
+                # If the model returned text, try to extract JSON substring
+                try:
+                    start = content.find('{')
+                    end = content.rfind('}')
+                    if start != -1 and end != -1 and end > start:
+                        result = json.loads(content[start:end+1])
+                    else:
+                        raise ValueError("No JSON in reply")
+                except Exception as e:
+                    _log_info(f"[Review] Invalid reply")
+                    return {"status": "error", "error": f"Invalid validator reply: {e}", "raw": content}
+
+            approved = bool(result.get("approved"))
+            reasons = result.get("reasons") if isinstance(result.get("reasons"), list) else []
+            revised = result.get("revised_plan") if isinstance(result.get("revised_plan"), list) else None
+
+            applied_plan = None
+            if revised and not approved:
+                # Apply revised plan to UI (extract titles only)
+                formatted = []
+                for i, step in enumerate(revised):
+                    if isinstance(step, dict):
+                        title = step.get("title", step.get("description", str(step)))
+                    else:
+                        title = str(step)
+                    formatted.append({"id": i+1, "title": title, "done": False})
+                self.task_list = formatted
+                applied_plan = formatted
+                if self.on_plan_update:
+                    self.on_plan_update(self.task_list)
+
+            # Logs and brief chat line
+            status_txt = "Approved" if approved else "Needs revision"
+            _log_info(f"[Review] {status_txt} — reasons: {len(reasons)} — revised_applied: {bool(applied_plan)}")
+            if self.on_assistant_message:
+                try:
+                    if approved:
+                        self.on_assistant_message("🧪 Plan review: Approved ✅")
+                    else:
+                        brief = ("; ".join(reasons[:2])) if reasons else "issues detected"
+                        self.on_assistant_message(f"🧪 Plan review: Changes required ❌ — {brief}")
+                except Exception:
+                    pass
+
+            result_payload = {
+                "status": "success",
+                "approved": approved,
+                "reasons": reasons,
+                "applied_revision": applied_plan is not None,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            return result_payload
+        except Exception as e:
+            _log_info(f"[Review] ERR -> {e}")
+            return {"status": "error", "error": str(e)}
     
     def chat(self, user_message: str) -> str:
         """Main chat function - handles user input and returns response"""
@@ -408,6 +512,14 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                         "required": ["tasks"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "review_plan",
+                    "description": "Ask the model to strictly validate the current plan against kitchen_state and optionally return a revised plan.",
+                    "parameters": {"type": "object", "properties": {"instructions": {"type": "string"}}}
+                }
             }
         ]
         
@@ -431,6 +543,12 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 response = requests.post(self.gpt_oss_url, json=payload, timeout=(10, 600), stream=True)
                 if response.status_code != 200:
                     _log_info(f"[HTTP {response.status_code}] stream request failed")
+                    # Inform the user in chat and stop gracefully
+                    if self.on_assistant_message:
+                        try:
+                            self.on_assistant_message("I'm having trouble connecting to the model right now (stream error). Please try again.")
+                        except Exception:
+                            pass
                     return f"HTTP Error {response.status_code}: {response.text}"
                 
                 # Begin streaming to UI
@@ -604,8 +722,18 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                 return content
                         else:
                             _log_info(f"[HTTP {non_stream_resp.status_code}] fallback request failed")
+                            if self.on_assistant_message:
+                                try:
+                                    self.on_assistant_message("I'm having trouble connecting to the model right now (fallback error). Please try again.")
+                                except Exception:
+                                    pass
                     except Exception as e:
                         _log_info(f"[Fallback] request error -> {e}")
+                        if self.on_assistant_message:
+                            try:
+                                self.on_assistant_message("I'm having trouble connecting to the model right now (network error). Please try again.")
+                            except Exception:
+                                pass
                     # Nothing usable
                     return "I didn't understand that. Can you try again?"
             
@@ -723,6 +851,9 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         self.task_tree.setColumnWidth(0, 60)
         self.task_tree.setColumnWidth(1, 520)
         self.task_tree.header().setStretchLastSection(True)
+        # Remove horizontal scrollbar and elide long text
+        self.task_tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.task_tree.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
         checklist_layout.addWidget(self.task_tree, 1)
         
         # Kitchen State
