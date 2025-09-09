@@ -13,6 +13,19 @@ from PyQt5 import QtWidgets, QtCore
 VERBOSE_LOGS = False
 ACTIVITY_LOG_HOOK: Optional[Callable[[str], None]] = None
 
+# Global toggle: when True, actually send socket commands to robot; when False, only log
+ROBOT_SEND_ENABLED = False
+
+# Canonical robot commands (strict, no paraphrasing)
+CANONICAL_COMMANDS = {
+    "Open the left cabinet door",
+    "Close the left cabinet door",
+    "Take off the lid from the gray recipient and place it on the counter",
+    "Pick up the lid from the counter and put it on the gray recipient",
+    "Pick up the green pineapple from the left cabinet and place it in the gray recipient",
+    "Put salt in the gray recipient",
+}
+
 def _log_debug(message: str):
     if VERBOSE_LOGS:
         print(message)
@@ -33,13 +46,22 @@ def _log_info(message: str):
 
 def send(cmd):
     """Function that GPT-OSS will call"""
-    # s = socket.socket()
-    # s.connect(("localhost", 7000))
-    # s.send(json.dumps(cmd).encode("utf-8"))
-    # resp = s.recv(65536).decode("utf-8")
-    # s.close()
-    _log_debug(f"[Robot] send {cmd}")
-    # return resp
+    global ROBOT_SEND_ENABLED
+    if ROBOT_SEND_ENABLED:
+        try:
+            s = socket.socket()
+            s.connect(("localhost", 7000))
+            s.send(json.dumps(cmd).encode("utf-8"))
+            resp = s.recv(65536).decode("utf-8")
+            s.close()
+            _log_info("[Robot] SENT command")
+            return resp
+        except Exception as e:
+            _log_info(f"[Robot] ERR send -> {e}")
+            raise
+    else:
+        _log_info(f"[Robot] DRY-RUN {cmd}")
+        return None
 
 class GPTOSSChatBot:
     def __init__(self,
@@ -74,6 +96,7 @@ class GPTOSSChatBot:
         self.current_task: Optional[str] = None
         self.current_user_task_text: Optional[str] = None
         self.task_list: List[Dict[str, Any]] = []  # [{"id": 1, "title": str, "done": bool}]
+        self.plan_approved: bool = False
         # Initialize with default kitchen state
         self.kitchen_state: Dict[str, Any] = {
             "cabinet_open": False,
@@ -109,22 +132,12 @@ You can execute robot actions and manage your own state using these functions:
 - "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
 - "Put salt in the gray recipient"
 
-## Your Responsibilities
-1. **Plan Creation**: ALWAYS create a plan first using create_plan() when user requests a task
-2. **Plan Validation**: AFTER creating a plan, call review_plan() and proceed ONLY if approved. If not approved, revise and re‑review until approved
-3. **Autonomous Execution**: Do NOT wait for user confirmation; once the plan is approved, immediately execute it end‑to‑end
-4. **State Tracking**: Maintain and update kitchen state as you work
-5. **Task Management**: Mark tasks complete as you finish them
-6. **Adaptive Execution**: Modify plans based on real conditions
-7. **Status Communication**: Keep the user informed of progress (avoid internal tool logs; communicate only meaningful updates)
+## Planning Rules
+- Plan steps MUST be selected from the Canonical Robot Commands list verbatim. Do not reword or invent new action strings.
+- Use generic preconditions: ensure access before manipulation (e.g., remove barriers/covers before adding or placing contents), then restore environment if appropriate.
 
-## Available Robot Actions
-- "Open the left cabinet door"
-- "Close the left cabinet door"
-- "Take off the lid from the gray recipient and place it on the counter"
-- "Pick up the lid from the counter and put it on the gray recipient"
-- "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
-- "Put salt in the gray recipient"
+## Environment Notes
+- Salt is available on the left side (counter), not inside the cabinet. Opening/closing the cabinet is not needed just to put salt in the gray recipient.
 
 ## Physical Constraints
 - Cannot access pineapple unless cabinet door is open
@@ -165,6 +178,20 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
     def execute_robot_command(self, language_instruction: str, use_angle_stop: bool = True):
         """Execute a command on the robot"""
         self.current_task = language_instruction
+        # Enforce canonical command contract
+        if language_instruction not in CANONICAL_COMMANDS:
+            payload = {
+                "status": "error",
+                "error": "Non-canonical command. Use an exact phrase from the canonical list.",
+                "instruction": language_instruction,
+                "allowed": sorted(list(CANONICAL_COMMANDS)),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            if self.on_tool_result:
+                self.on_tool_result("execute_robot_command", payload)
+            _log_info(f"[Robot] REJECT non-canonical: {language_instruction}")
+            return payload
+        
         # Notify UI execution start
         if self.on_execute_start:
             try:
@@ -228,11 +255,13 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             _log_info(f"[Robot] ERR status -> {e}")
             return payload
     
-    def update_kitchen_state(self, state_updates: Dict[str, Any]):
+    def update_kitchen_state(self, state_updates: Optional[Dict[str, Any]] = None):
         """Let GPT-OSS update kitchen state dynamically"""
         try:
+            if state_updates is None:
+                return {"status": "error", "error": "Missing required field: state_updates (object)"}
             if not isinstance(state_updates, dict):
-                raise ValueError("state_updates must be an object")
+                return {"status": "error", "error": "state_updates must be an object"}
             self.kitchen_state.update(state_updates)
             if self.on_status_update:
                 self.on_status_update({
@@ -279,6 +308,8 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
     def create_plan(self, tasks: List[Dict[str, Any]]):
         """Let GPT-OSS create a new task plan"""
         try:
+            # any new plan invalidates prior approval
+            self.plan_approved = False
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a list")
             
@@ -287,7 +318,22 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             for i, task in enumerate(tasks):
                 if isinstance(task, dict):
                     # Extract description from task object
-                    description = task.get("title", task.get("description", str(task)))
+                    description = (
+                        task.get("title")
+                        or task.get("description")
+                        or task.get("command")
+                        or task.get("action")
+                        or task.get("name")
+                        or task.get("step")
+                        or task.get("instruction")
+                        or task.get("task")
+                    )
+                    if description is None and len(task) == 1:
+                        only_val = next(iter(task.values()))
+                        if isinstance(only_val, (str, int, float)):
+                            description = str(only_val)
+                    if description is None:
+                        description = str(task)
                     formatted_tasks.append({
                         "id": i + 1,
                         "title": description,
@@ -305,6 +351,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             if self.on_plan_update:
                 self.on_plan_update(self.task_list)
             _log_info(f"[Plan] Created {len(self.task_list)} tasks")
+            try:
+                lines = "\n".join([f"  {t.get('id')}. {t.get('title')}" for t in self.task_list])
+                _log_info(f"[Plan] Tasks:\n{lines}")
+            except Exception:
+                pass
             return {
                 "status": "success",
                 "created_plan": self.task_list,
@@ -318,14 +369,15 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         Returns a payload with approved, reasons, and optionally a revised plan that is applied to the UI.
         """
         try:
-            # Build a compact review prompt. No hardcoded rules beyond natural-language rubric.
+            # Build a compact review prompt focused on principles, without hardcoded domain rules
             rubric = (
-                "You are a strict plan validator for a kitchen robot. Review the proposed plan for physical feasibility, safety, and completeness, using the provided kitchen_state. "
-                "Only evaluate ordering and preconditions; do NOT change the wording of any robot action. "
-                "If the plan is valid, return approved=true. If not, return approved=false and provide a revised plan that fixes issues. "
-                "Do NOT paraphrase robot actions: any robot action step MUST use the exact canonical command strings; you may only reorder, insert, or remove canonical steps. "
-                "Acceptance criteria for approval (all must hold): (1) Cabinet is opened before any action that takes items from it and remains open until those actions are complete; (2) Lid is removed before any action that requires access to the gray recipient's contents; (3) Lid is restored at the end when appropriate; (4) Cabinet is closed at the end if it was opened; (5) All robot actions are from the canonical command list and wording is unchanged. "
-                "Prefer minimal changes, preserve intent, and ensure steps are sequenced so preconditions are met before actions. "
+                "You are a strict plan validator for a kitchen robot. Review the proposed plan for physical feasibility, safety, and completeness using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic world knowledge; and (4) the canonical command constraint. "
+                "Normalize terminology: treat 'pot' and 'gray recipient' as the same container; do not reject plans due to these synonyms. "
+                "Your task is to assess ordering and preconditions based on these inputs. Do not inject domain-specific, hardcoded rules or examples. "
+                "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
+                "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
+                "Principles for approval: (A) Preconditions are satisfied before actions (derived from kitchen_state and generic action semantics, e.g., remove barriers/covers to establish access when needed); (B) Sequencing is coherent and non-contradictory; (C) Steps are physically feasible and safe; (D) Minimality: do not add steps unrelated to the goal or unnecessary given kitchen_state; (E) Adhere strictly to canonical commands without rewording. "
+                "Prefer minimal changes and preserve the user's intent. "
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
             )
             review_messages = [
@@ -369,7 +421,22 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 formatted = []
                 for i, step in enumerate(revised):
                     if isinstance(step, dict):
-                        title = step.get("title", step.get("description", str(step)))
+                        title = (
+                            step.get("title")
+                            or step.get("description")
+                            or step.get("command")
+                            or step.get("action")
+                            or step.get("name")
+                            or step.get("step")
+                            or step.get("instruction")
+                            or step.get("task")
+                        )
+                        if title is None and len(step) == 1:
+                            only_val = next(iter(step.values()))
+                            if isinstance(only_val, (str, int, float)):
+                                title = str(only_val)
+                        if title is None:
+                            title = str(step)
                     else:
                         title = str(step)
                     formatted.append({"id": i+1, "title": title, "done": False})
@@ -377,10 +444,17 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 applied_plan = formatted
                 if self.on_plan_update:
                     self.on_plan_update(self.task_list)
+                try:
+                    lines = "\n".join([f"  {t.get('id')}. {t.get('title')}" for t in self.task_list])
+                    _log_info(f"[Plan] Revised Tasks:\n{lines}")
+                except Exception:
+                    pass
 
             # Logs and brief chat line
             status_txt = "Approved" if approved else "Needs revision"
             _log_info(f"[Review] {status_txt} — reasons: {len(reasons)} — revised_applied: {bool(applied_plan)}")
+            # Track approval state
+            self.plan_approved = approved
             if self.on_assistant_message:
                 try:
                     if approved:
@@ -529,7 +603,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "type": "function",
                 "function": {
                     "name": "review_plan",
-                    "description": "Ask the model to strictly validate the current plan against kitchen_state and optionally return a revised plan.",
+                    "description": "Validate the current plan against the kitchen_state using principle-based checks and optionally return a minimally revised plan.",
                     "parameters": {"type": "object", "properties": {"instructions": {"type": "string"}}}
                 }
             }
@@ -630,6 +704,25 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                         function_args = json.loads(function_args)
                                     except Exception:
                                         pass
+                                # Enforce review before executing robot steps
+                                if function_name == "execute_robot_command" and not self.plan_approved:
+                                    _log_info("[Guard] Plan not approved yet; invoking review_plan before execution")
+                                    review_payload = self.review_plan()
+                                    tool_results.append(review_payload)
+                                    # Record synthetic tool call/result in history to let model observe
+                                    self.conversation_history.append({
+                                        "role": "assistant",
+                                        "content": "",
+                                        "tool_calls": [{"type": "function", "function": {"name": "review_plan", "arguments": {}}}]
+                                    })
+                                    self.conversation_history.append({
+                                        "role": "tool",
+                                        "tool_call_id": "call_review_autoguard",
+                                        "name": "review_plan",
+                                        "content": json.dumps(review_payload)
+                                    })
+                                    _log_info("  ✓ review_plan (auto)")
+                                    continue
                                 result_payload = self.available_functions[function_name](**function_args)
                                 tool_results.append(result_payload)
                                 _log_info(f"  ✓ {function_name}")
@@ -901,6 +994,11 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         refresh_btn.clicked.connect(self.refresh_status)
         clear_btn = QtWidgets.QPushButton("Clear Checklist")
         clear_btn.clicked.connect(self.clear_checklist)
+        # Send-to-robot toggle (left side)
+        self.robot_toggle = QtWidgets.QCheckBox("Send to robot")
+        self.robot_toggle.stateChanged.connect(self._on_robot_toggle)
+        self.robot_toggle.setChecked(ROBOT_SEND_ENABLED)
+        btn_row.addWidget(self.robot_toggle)
         btn_row.addStretch(1)
         btn_row.addWidget(refresh_btn)
         btn_row.addWidget(clear_btn)
@@ -1196,6 +1294,11 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         self._stream_open = False
         self._stream_started = False
         self._stream_last_was_blank = False
+
+    def _on_robot_toggle(self, state: int):
+        global ROBOT_SEND_ENABLED
+        ROBOT_SEND_ENABLED = state == QtCore.Qt.CheckState.Checked
+        _log_info(f"[UI] Robot send {'ENABLED' if ROBOT_SEND_ENABLED else 'DISABLED'}")
 
 # Interactive Chat Interface (PyQt5)
 def main():
