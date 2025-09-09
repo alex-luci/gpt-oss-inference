@@ -349,12 +349,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         try:
             # Build a compact review prompt focused on principles, without hardcoded domain rules
             rubric = (
-                "You are a strict plan validator for a kitchen robot. Review the proposed plan for physical feasibility, safety, and completeness using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic world knowledge; and (4) the canonical command constraint. "
-                "Your task is to assess ordering and preconditions based on these inputs. Do not inject domain-specific, hardcoded rules or examples. "
+                "You are a strict plan validator for a kitchen robot. Review the proposed plan using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic physical/common-sense constraints; and (4) the requirement to use canonical commands exactly. "
+                "Assess ordering and preconditions based on these inputs. Do not introduce domain-specific assumptions or examples beyond what is implied by the goal and state. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
                 "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
-                "Principles for approval: (A) Preconditions are satisfied before actions (derived from kitchen_state and generic action semantics, e.g., remove barriers/covers to establish access when needed); (B) Sequencing is coherent and non-contradictory; (C) Steps are physically feasible and safe; (D) Minimality: do not add steps unrelated to the goal or unnecessary given kitchen_state; (E) Adhere strictly to canonical commands without rewording. "
-                "Interpret canonical actions by their natural meaning. In particular, 'Put salt in the gray recipient' includes obtaining salt from its nearby location and dispensing it; do NOT require an extra fetch step or non-canonical wording. "
+                "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
                 "Prefer minimal changes and preserve the user's intent. "
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
             )
