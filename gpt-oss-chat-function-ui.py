@@ -75,7 +75,6 @@ class GPTOSSChatBot:
         self.conversation_history = []
         self.available_functions = {
             "execute_robot_command": self.execute_robot_command,
-            "get_robot_status": self.get_robot_status,
             "update_kitchen_state": self.update_kitchen_state,
             "mark_task_complete": self.mark_task_complete,
             "get_current_plan": self.get_current_plan,
@@ -100,8 +99,8 @@ class GPTOSSChatBot:
         # Initialize with default kitchen state
         self.kitchen_state: Dict[str, Any] = {
             "cabinet_open": False,
-            "lid_on_pot": True,
-            "pineapple_in_pot": False,
+            "lid_on_gray_recipient": True,
+            "pineapple_in_gray_recipient": False,
             "salt_added": False
         }
         
@@ -135,16 +134,17 @@ You can execute robot actions and manage your own state using these functions:
 ## Planning Rules
 - Plan steps MUST be selected from the Canonical Robot Commands list verbatim. Do not reword or invent new action strings.
 - Use generic preconditions: ensure access before manipulation (e.g., remove barriers/covers before adding or placing contents), then restore environment if appropriate.
+- Action semantics: interpret each canonical command with its natural meaning. Specifically, "Put salt in the gray recipient" entails obtaining salt from the nearby counter and dispensing it into the gray recipient; do not require an extra fetch step for salt.
 
 ## Environment Notes
 - Salt is available on the left side (counter), not inside the cabinet. Opening/closing the cabinet is not needed just to put salt in the gray recipient.
 
 ## Physical Constraints
 - Cannot access pineapple unless cabinet door is open
-- Cannot put pineapple in pot if lid is on pot
-- Cannot add salt if lid is on pot
+- Cannot put pineapple in gray recipient if lid is on the gray recipient
+- Cannot add salt if lid is on gray recipient
 - Must close cabinet door after removing items
-- Must put lid back on pot at the end (for smoothie tasks)
+- Must put lid back on gray recipient at the end (for smoothie tasks)
 
 ## Your Autonomous Process
 1. **Analyze** user request and current state
@@ -159,7 +159,7 @@ You can execute robot actions and manage your own state using these functions:
 
 ## State Management Examples
 After opening cabinet: update_kitchen_state({"cabinet_open": True})
-After removing lid: update_kitchen_state({"lid_on_pot": False})
+After removing lid: update_kitchen_state({"lid_on_gray_recipient": False})
 After completing a task: mark_task_complete(task_id)
 
 ## Key Behaviors
@@ -231,28 +231,6 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             if self.on_tool_result:
                 self.on_tool_result("execute_robot_command", payload)
             _log_info(f"[Robot] ERR execute: {language_instruction} -> {e}")
-            return payload
-    
-    def get_robot_status(self):
-        """Get current robot status"""
-        cmd = {"command": "get_status"}
-        try:
-            result = send(cmd)
-            payload = {"status": "success", "robot_status": result, "timestamp": datetime.now(timezone.utc).isoformat()}
-            self.last_robot_status = payload
-            if self.on_tool_result:
-                self.on_tool_result("get_robot_status", payload)
-            if self.on_status_update:
-                self.on_status_update(payload)
-            _log_info("[Robot] OK status")
-            return payload
-        except Exception as e:
-            payload = {"status": "error", "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
-            if self.on_tool_result:
-                self.on_tool_result("get_robot_status", payload)
-            if self.on_status_update:
-                self.on_status_update(payload)
-            _log_info(f"[Robot] ERR status -> {e}")
             return payload
     
     def update_kitchen_state(self, state_updates: Optional[Dict[str, Any]] = None):
@@ -372,11 +350,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             # Build a compact review prompt focused on principles, without hardcoded domain rules
             rubric = (
                 "You are a strict plan validator for a kitchen robot. Review the proposed plan for physical feasibility, safety, and completeness using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic world knowledge; and (4) the canonical command constraint. "
-                "Normalize terminology: treat 'pot' and 'gray recipient' as the same container; do not reject plans due to these synonyms. "
                 "Your task is to assess ordering and preconditions based on these inputs. Do not inject domain-specific, hardcoded rules or examples. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
                 "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
                 "Principles for approval: (A) Preconditions are satisfied before actions (derived from kitchen_state and generic action semantics, e.g., remove barriers/covers to establish access when needed); (B) Sequencing is coherent and non-contradictory; (C) Steps are physically feasible and safe; (D) Minimality: do not add steps unrelated to the goal or unnecessary given kitchen_state; (E) Adhere strictly to canonical commands without rewording. "
+                "Interpret canonical actions by their natural meaning. In particular, 'Put salt in the gray recipient' includes obtaining salt from its nearby location and dispensing it; do NOT require an extra fetch step or non-canonical wording. "
                 "Prefer minimal changes and preserve the user's intent. "
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
             )
@@ -531,17 +509,6 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             {
                 "type": "function",
                 "function": {
-                    "name": "get_robot_status",
-                    "description": "Get the current status of the robot",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "update_kitchen_state",
                     "description": "Update remembered kitchen state (assistant-managed)",
                     "parameters": {
@@ -609,7 +576,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             }
         ]
         
-        max_steps = 20
+        max_steps = 50
         step = 0
         
         try:
@@ -708,6 +675,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                 if function_name == "execute_robot_command" and not self.plan_approved:
                                     _log_info("[Guard] Plan not approved yet; invoking review_plan before execution")
                                     review_payload = self.review_plan()
+                                    if self.on_tool_result:
+                                        try:
+                                            self.on_tool_result("review_plan", review_payload)
+                                        except Exception:
+                                            pass
                                     tool_results.append(review_payload)
                                     # Record synthetic tool call/result in history to let model observe
                                     self.conversation_history.append({
@@ -724,6 +696,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                     _log_info("  ✓ review_plan (auto)")
                                     continue
                                 result_payload = self.available_functions[function_name](**function_args)
+                                if self.on_tool_result:
+                                    try:
+                                        self.on_tool_result(function_name, result_payload)
+                                    except Exception:
+                                        pass
                                 tool_results.append(result_payload)
                                 _log_info(f"  ✓ {function_name}")
                             except Exception as e:
@@ -787,6 +764,11 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                                 except Exception:
                                                     pass
                                             result_payload = self.available_functions[function_name](**function_args)
+                                            if self.on_tool_result:
+                                                try:
+                                                    self.on_tool_result(function_name, result_payload)
+                                                except Exception:
+                                                    pass
                                             tool_results.append(result_payload)
                                             _log_info(f"  ✓ {function_name}")
                                         except Exception as e:
@@ -924,25 +906,21 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         meta_form = QtWidgets.QGridLayout()
         status_layout.addLayout(meta_form)
         
-        meta_form.addWidget(QtWidgets.QLabel("Robot Status:"), 0, 0)
-        self.status_value_label = QtWidgets.QLabel("Unknown")
-        meta_form.addWidget(self.status_value_label, 0, 1)
-        
-        meta_form.addWidget(QtWidgets.QLabel("User Task:"), 1, 0)
+        meta_form.addWidget(QtWidgets.QLabel("User Task:"), 0, 0)
         self.current_user_task_label = QtWidgets.QLabel("-")
-        meta_form.addWidget(self.current_user_task_label, 1, 1)
+        meta_form.addWidget(self.current_user_task_label, 0, 1)
         
-        meta_form.addWidget(QtWidgets.QLabel("Executing:"), 2, 0)
+        meta_form.addWidget(QtWidgets.QLabel("Executing:"), 1, 0)
         self.current_executing_label = QtWidgets.QLabel("-")
-        meta_form.addWidget(self.current_executing_label, 2, 1)
+        meta_form.addWidget(self.current_executing_label, 1, 1)
         
-        meta_form.addWidget(QtWidgets.QLabel("Next Step:"), 3, 0)
+        meta_form.addWidget(QtWidgets.QLabel("Next Step:"), 2, 0)
         self.current_task_label = QtWidgets.QLabel("-")
-        meta_form.addWidget(self.current_task_label, 3, 1)
+        meta_form.addWidget(self.current_task_label, 2, 1)
         
-        meta_form.addWidget(QtWidgets.QLabel("Plan Approved:"), 4, 0)
+        meta_form.addWidget(QtWidgets.QLabel("Plan Approved:"), 3, 0)
         self.plan_approved_label = QtWidgets.QLabel("-")
-        meta_form.addWidget(self.plan_approved_label, 4, 1)
+        meta_form.addWidget(self.plan_approved_label, 3, 1)
         
         # Checklist
         checklist_container = QtWidgets.QWidget()
@@ -973,25 +951,23 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         
         self.ks_labels: Dict[str, QtWidgets.QLabel] = {
             "cabinet_open": QtWidgets.QLabel("No"),
-            "lid_on_pot": QtWidgets.QLabel("Yes"),
-            "pineapple_in_pot": QtWidgets.QLabel("No"),
+            "lid_on_gray_recipient": QtWidgets.QLabel("Yes"),
+            "pineapple_in_gray_recipient": QtWidgets.QLabel("No"),
             "salt_added": QtWidgets.QLabel("No")
         }
         row = 0
         ks_form.addWidget(QtWidgets.QLabel("Cabinet Open:"), row, 0)
         ks_form.addWidget(self.ks_labels["cabinet_open"], row, 1); row += 1
-        ks_form.addWidget(QtWidgets.QLabel("Lid On Pot:"), row, 0)
-        ks_form.addWidget(self.ks_labels["lid_on_pot"], row, 1); row += 1
-        ks_form.addWidget(QtWidgets.QLabel("Pineapple In Pot:"), row, 0)
-        ks_form.addWidget(self.ks_labels["pineapple_in_pot"], row, 1); row += 1
+        ks_form.addWidget(QtWidgets.QLabel("Lid On Gray Recipient:"), row, 0)
+        ks_form.addWidget(self.ks_labels["lid_on_gray_recipient"], row, 1); row += 1
+        ks_form.addWidget(QtWidgets.QLabel("Pineapple In Gray Recipient:"), row, 0)
+        ks_form.addWidget(self.ks_labels["pineapple_in_gray_recipient"], row, 1); row += 1
         ks_form.addWidget(QtWidgets.QLabel("Salt Added:"), row, 0)
         ks_form.addWidget(self.ks_labels["salt_added"], row, 1)
         
         # Buttons
         btn_row = QtWidgets.QHBoxLayout()
         status_layout.addLayout(btn_row)
-        refresh_btn = QtWidgets.QPushButton("Refresh Status")
-        refresh_btn.clicked.connect(self.refresh_status)
         clear_btn = QtWidgets.QPushButton("Clear Checklist")
         clear_btn.clicked.connect(self.clear_checklist)
         # Send-to-robot toggle (left side)
@@ -1000,7 +976,6 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         self.robot_toggle.setChecked(ROBOT_SEND_ENABLED)
         btn_row.addWidget(self.robot_toggle)
         btn_row.addStretch(1)
-        btn_row.addWidget(refresh_btn)
         btn_row.addWidget(clear_btn)
         
         # Activity Log
@@ -1033,8 +1008,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             on_assistant_stream=self._on_assistant_stream
         )
         
-        # Initial status and kitchen state
-        self.refresh_status()
+        # Initial kitchen state
         self._update_kitchen_state_display(self.bot.kitchen_state)
         
         # Timer to poll queues
@@ -1080,7 +1054,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         return str(v)
     
     def _update_kitchen_state_display(self, kitchen_state: Dict[str, Any]):
-        for key in ("cabinet_open", "lid_on_pot", "pineapple_in_pot", "salt_added"):
+        for key in ("cabinet_open", "lid_on_gray_recipient", "pineapple_in_gray_recipient", "salt_added"):
             if key in self.ks_labels:
                 self.ks_labels[key].setText(self._fmt_bool(kitchen_state.get(key)))
     
@@ -1110,11 +1084,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
     def clear_checklist(self):
         self.task_tree.clear()
     
-    def refresh_status(self):
-        def worker():
-            status = self.bot.get_robot_status()
-            self.status_queue.put(status)
-        threading.Thread(target=worker, daemon=True).start()
+    # Removed robot status refresh; no longer needed
     
     def send_message(self):
         text = self.user_input.text().strip()
@@ -1140,16 +1110,16 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
     
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            # Optimistic update: mark the next pending task complete on success
             try:
                 if isinstance(payload, dict) and payload.get("status") == "success":
-                    next_task = next((t for t in self.bot.task_list if not t.get("done")), None)
-                    if next_task and isinstance(next_task.get("id"), int):
-                        self.bot.mark_task_complete(next_task.get("id"))
+                    instr = payload.get("instruction")
+                    if isinstance(instr, str) and instr:
+                        # Find the matching task by exact title
+                        match = next((t for t in self.bot.task_list if not t.get("done") and t.get("title") == instr), None)
+                        if match and isinstance(match.get("id"), int):
+                            self.bot.mark_task_complete(match.get("id"))
             except Exception:
                 pass
-        elif name == "get_robot_status":
-            pass
         elif name == "review_plan":
             try:
                 approved = bool(payload.get("approved")) if isinstance(payload, dict) else False
@@ -1197,23 +1167,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         except queue.Empty:
             pass
         
-        # Status updates
-        try:
-            while True:
-                status = self.status_queue.get_nowait()
-                if isinstance(status, dict) and status.get("status") == "success":
-                    robot_status = status.get("robot_status")
-                    if isinstance(robot_status, str):
-                        trimmed = robot_status[:64] + ("…" if len(robot_status) > 64 else "")
-                        self.status_value_label.setText(trimmed)
-                    else:
-                        self.status_value_label.setText("OK")
-                elif isinstance(status, dict) and status.get("status") == "error":
-                    self.status_value_label.setText(f"Error: {status.get('error')}")
-                else:
-                    self.status_value_label.setText("Unknown")
-        except queue.Empty:
-            pass
+        # Robot status removed
         
         # Plan updates
         try:
@@ -1241,6 +1195,17 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
                 if isinstance(log, str):
                     self.activity_log.append(log)
                     self.activity_log.ensureCursorVisible()
+        except queue.Empty:
+            pass
+
+        # Kitchen state updates (via status_queue)
+        try:
+            while True:
+                status_payload = self.status_queue.get_nowait()
+                if isinstance(status_payload, dict):
+                    ks = status_payload.get("kitchen_state")
+                    if isinstance(ks, dict):
+                        self._update_kitchen_state_display(ks)
         except queue.Empty:
             pass
 
