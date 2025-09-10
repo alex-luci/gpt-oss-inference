@@ -602,8 +602,8 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "stream": True
                 }
                 
-                # Stream response for smoother UI - try non-streaming first as workaround for HTTP 500
-                _log_info("[Request] Using non-streaming mode to avoid HTTP 500 errors")
+                # Use non-streaming mode for better reliability
+                _log_info("[Request] Using non-streaming mode for stable communication")
                 payload["stream"] = False
                 response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
                 
