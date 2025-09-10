@@ -364,6 +364,8 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             rubric = (
                 "You are a strict plan validator for a kitchen robot. Review the proposed plan using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic physical/common-sense constraints; and (4) the requirement to use canonical commands exactly. "
                 "Assess ordering and preconditions based on these inputs. Do not introduce domain-specific assumptions or examples beyond what is implied by the goal and state. "
+                "IMPORTANT: The command 'Put salt in the gray recipient' is a complete action that includes obtaining salt from the nearby counter and dispensing it into the recipient. Salt is available on the counter, NOT in the cabinet. Do not require additional steps to fetch salt. "
+                "SALT RULE: Only add salt if the user explicitly requests it in their original request. Do not assume salt should be added to recipes unless specifically asked for. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
                 "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
                 "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
