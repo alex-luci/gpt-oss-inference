@@ -120,7 +120,7 @@ You can execute robot actions and manage your own state using these functions:
 - update_kitchen_state(state_updates): Update your understanding of kitchen state
 - mark_task_complete(task_id): Mark tasks as complete in your plan
 - get_current_plan(): Review your current plan and state
-- create_plan(tasks): Create a new task plan for the user
+- create_plan(tasks): Create a new task plan for the user (use "title" field for each task)
 - review_plan(): Ask an independent review to validate or revise your plan before execution
 
 ## Canonical Robot Commands (MUST use exact text; DO NOT paraphrase)
@@ -153,9 +153,16 @@ You can execute robot actions and manage your own state using these functions:
 4. **Respect physical constraints**: Do not attempt to do something that is physically impossible
 5. **Execute** each step using robot commands
 6. **Update** kitchen state after each action
-7. **Mark** tasks complete as you finish them
+7. **Mark** tasks complete immediately after successful execution
 8. **Adapt** if conditions change or actions fail
 9. **Communicate** progress and completion
+
+## Critical Execution Pattern
+For EVERY robot command execution, you MUST follow this exact sequence:
+1. Call execute_robot_command(canonical_command)
+2. If successful, immediately call update_kitchen_state(state_changes)
+3. If successful, immediately call mark_task_complete(task_id) for the completed step
+This ensures the UI checklist stays synchronized with your progress.
 
 ## State Management Examples
 After opening cabinet: update_kitchen_state({"cabinet_open": True})
@@ -171,6 +178,7 @@ After completing a task: mark_task_complete(task_id)
 - **ALWAYS CREATE A PLAN FIRST**: Use create_plan() before executing any tasks
 - **VALIDATE THE PLAN**: Use review_plan() and only execute an approved plan
 - **USE CANONICAL COMMANDS**: When calling execute_robot_command, the language_instruction MUST be exactly one of the canonical commands above (no paraphrasing)
+- **MARK TASKS COMPLETE**: After EVERY successful execute_robot_command, you MUST call mark_task_complete(task_id) to update the checklist
 - **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
 
 You have complete autonomy. Plan, execute, and manage everything yourself!"""
@@ -555,9 +563,12 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "title": {"type": "string", "description": "Task description"}
+                                        "title": {"type": "string", "description": "Task description"},
+                                        "description": {"type": "string", "description": "Task description (alternative field)"},
+                                        "command": {"type": "string", "description": "Task command (alternative field)"},
+                                        "action": {"type": "string", "description": "Task action (alternative field)"}
                                     },
-                                    "required": ["title"]
+                                    "additionalProperties": True
                                 }
                             }
                         },
@@ -591,61 +602,38 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "stream": True
                 }
                 
-                # Stream response for smoother UI
-                response = requests.post(self.gpt_oss_url, json=payload, timeout=(10, 600), stream=True)
+                # Stream response for smoother UI - try non-streaming first as workaround for HTTP 500
+                _log_info("[Request] Using non-streaming mode to avoid HTTP 500 errors")
+                payload["stream"] = False
+                response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
+                
                 if response.status_code != 200:
-                    _log_info(f"[HTTP {response.status_code}] stream request failed")
-                    # Inform the user in chat and stop gracefully
+                    _log_info(f"[HTTP {response.status_code}] request failed: {response.text[:200]}")
                     if self.on_assistant_message:
                         try:
-                            self.on_assistant_message("I'm having trouble connecting to the model right now (stream error). Please try again.")
+                            self.on_assistant_message("I'm having trouble connecting to the model right now. Please try again.")
                         except Exception:
                             pass
-                    return f"HTTP Error {response.status_code}: {response.text}"
+                    return f"HTTP Error {response.status_code}: {response.text[:200]}"
                 
-                # Begin streaming to UI
-                if self.on_assistant_stream:
+                # Parse non-streaming response
+                parsed = self._parse_gpt_response(response.text)
+                message = parsed.get("message", {})
+                full_content = message.get("content", "")
+                tool_calls_buffer = message.get("tool_calls", [])
+                
+                # Simulate streaming for UI consistency
+                if full_content and self.on_assistant_stream:
                     try:
                         self.on_assistant_stream({"type": "start"})
-                    except Exception:
-                        pass
-                full_content = ""
-                tool_calls_buffer: List[Dict[str, Any]] = []
-                for line in response.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except Exception:
-                        # Some servers prefix with 'data: '
-                        if line.startswith("data: "):
-                            try:
-                                obj = json.loads(line[len("data: "):])
-                            except Exception:
-                                continue
-                        else:
-                            continue
-                    # Ollama-like streaming fields
-                    if obj.get("done") is True:
-                        break
-                    msg = obj.get("message", {})
-                    delta = msg.get("content", "")
-                    if delta:
-                        full_content += delta
-                        if self.on_assistant_stream:
-                            try:
-                                self.on_assistant_stream({"type": "delta", "text": delta})
-                            except Exception:
-                                pass
-                        # Slow down streaming slightly for better readability
-                        time.sleep(0.02)
-                    # Capture tool calls if any appear
-                    tc = msg.get("tool_calls")
-                    if tc:
-                        tool_calls_buffer = tc
-                # Finish stream
-                if self.on_assistant_stream:
-                    try:
+                        # Break content into chunks for streaming effect
+                        words = full_content.split(' ')
+                        for i in range(0, len(words), 3):  # 3 words at a time
+                            chunk = ' '.join(words[i:i+3])
+                            if i + 3 < len(words):
+                                chunk += ' '
+                            self.on_assistant_stream({"type": "delta", "text": chunk})
+                            time.sleep(0.05)  # Small delay for streaming effect
                         self.on_assistant_stream({"type": "end"})
                     except Exception:
                         pass
@@ -1109,16 +1097,9 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
     
     def _on_tool_result(self, name: str, payload: Dict[str, Any]):
         if name == "execute_robot_command":
-            try:
-                if isinstance(payload, dict) and payload.get("status") == "success":
-                    instr = payload.get("instruction")
-                    if isinstance(instr, str) and instr:
-                        # Find the matching task by exact title
-                        match = next((t for t in self.bot.task_list if not t.get("done") and t.get("title") == instr), None)
-                        if match and isinstance(match.get("id"), int):
-                            self.bot.mark_task_complete(match.get("id"))
-            except Exception:
-                pass
+            # Let the AI model handle task completion via mark_task_complete calls
+            # No automatic UI-driven task completion to avoid conflicts
+            pass
         elif name == "review_plan":
             try:
                 approved = bool(payload.get("approved")) if isinstance(payload, dict) else False
