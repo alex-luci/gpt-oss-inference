@@ -147,15 +147,15 @@ You can execute robot actions and manage your own state using these functions:
 - Must put lid back on gray recipient at the end (for smoothie tasks)
 
 ## Your Autonomous Process
-1. **Analyze** user request and current state
-2. **Plan** by creating a task list using create_plan() - THIS IS REQUIRED
-3. **Validate** the plan using review_plan(); if not approved, revise and re‑validate
-4. **Respect physical constraints**: Do not attempt to do something that is physically impossible
+1. **Analyze** user request and current state (SILENT - no chat messages)
+2. **Plan** by creating a task list using create_plan() - THIS IS REQUIRED (SILENT - no chat messages)
+3. **Validate** the plan using review_plan(); if not approved, revise and re‑validate (SILENT - no chat messages)
+4. **Communicate** the approved plan: Once approved, send ONE message: "Here's my plan: [list the steps]. I'll execute it now."
 5. **Execute** each step using robot commands
 6. **Update** kitchen state after each action
 7. **Mark** tasks complete immediately after successful execution
 8. **Adapt** if conditions change or actions fail
-9. **Communicate** progress and completion
+9. **Communicate** final completion
 
 ## Critical Execution Pattern
 For EVERY robot command execution, you MUST follow this exact sequence:
@@ -173,13 +173,18 @@ After completing a task: mark_task_complete(task_id)
 - **Be autonomous**: Make all decisions yourself
 - **Be adaptive**: Change plans based on real conditions
 - **Be thorough**: Complete entire tasks end-to-end
-- **Be communicative**: Explain what you're doing and why
 - **Be state-aware**: Always update your understanding of the kitchen
 - **ALWAYS CREATE A PLAN FIRST**: Use create_plan() before executing any tasks
 - **VALIDATE THE PLAN**: Use review_plan() and only execute an approved plan
 - **USE CANONICAL COMMANDS**: When calling execute_robot_command, the language_instruction MUST be exactly one of the canonical commands above (no paraphrasing)
 - **MARK TASKS COMPLETE**: After EVERY successful execute_robot_command, you MUST call mark_task_complete(task_id) to update the checklist
 - **Salt rule**: Only add salt if the user explicitly requests it - do not add salt unless told to do so
+
+## Communication Rules
+- **SILENT PLANNING**: Do NOT send any chat messages during create_plan() or review_plan() calls
+- **SINGLE PLAN MESSAGE**: After plan approval, send exactly ONE message: "Here's my plan: [list each step]. I'll execute it now."
+- **NO PROGRESS UPDATES**: Do not send messages during execution - let the UI show progress
+- **FINAL MESSAGE ONLY**: Send a completion message when all tasks are done
 
 You have complete autonomy. Plan, execute, and manage everything yourself!"""
 
@@ -440,15 +445,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             _log_info(f"[Review] {status_txt} — reasons: {len(reasons)} — revised_applied: {bool(applied_plan)}")
             # Track approval state
             self.plan_approved = approved
-            if self.on_assistant_message:
-                try:
-                    if approved:
-                        self.on_assistant_message("🧪 Plan review: Approved ✅")
-                    else:
-                        brief = ("; ".join(reasons[:2])) if reasons else "issues detected"
-                        self.on_assistant_message(f"🧪 Plan review: Changes required ❌ — {brief}")
-                except Exception:
-                    pass
+            # No chat messages during review - keep it silent for background processing
 
             result_payload = {
                 "status": "success",
@@ -658,7 +655,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                         function_args = json.loads(function_args)
                                     except Exception:
                                         pass
-                                # Enforce review before executing robot steps
+                                # Enforce review before executing robot steps and send plan message
                                 if function_name == "execute_robot_command" and not self.plan_approved:
                                     _log_info("[Guard] Plan not approved yet; invoking review_plan before execution")
                                     review_payload = self.review_plan()
@@ -681,6 +678,17 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                         "content": json.dumps(review_payload)
                                     })
                                     _log_info("  ✓ review_plan (auto)")
+                                    
+                                    # If plan was approved, send the plan message before continuing
+                                    if self.plan_approved and self.task_list:
+                                        plan_steps = [f"{i+1}. {task.get('title', '')}" for i, task in enumerate(self.task_list)]
+                                        plan_message = f"Here's my plan:\n" + "\n".join(plan_steps) + "\n\nI'll execute it now."
+                                        if self.on_assistant_message:
+                                            try:
+                                                self.on_assistant_message(plan_message)
+                                            except Exception:
+                                                pass
+                                        _log_info("[Plan] Sent plan message to user")
                                     continue
                                 result_payload = self.available_functions[function_name](**function_args)
                                 if self.on_tool_result:
