@@ -370,13 +370,20 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "Prefer minimal changes and preserve the user's intent. "
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
             )
+            review_data = {
+                "kitchen_state": self.kitchen_state,
+                "plan": self.task_list
+            }
+            
             review_messages = [
                 {"role": "system", "content": rubric},
-                {"role": "user", "content": json.dumps({
-                    "kitchen_state": self.kitchen_state,
-                    "plan": self.task_list
-                })}
+                {"role": "user", "content": json.dumps(review_data)}
             ]
+            
+            # Log what we're sending to the reviewer
+            _log_info(f"[Review] Sending to reviewer:")
+            _log_info(f"[Review] Kitchen state: {self.kitchen_state}")
+            _log_info(f"[Review] Plan being reviewed: {[task.get('title') for task in self.task_list]}")
 
             payload = {"model": "gpt-oss:20b", "messages": review_messages, "stream": False}
             resp = requests.post(self.gpt_oss_url, json=payload, timeout=60)
@@ -404,6 +411,14 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             approved = bool(result.get("approved"))
             reasons = result.get("reasons") if isinstance(result.get("reasons"), list) else []
             revised = result.get("revised_plan") if isinstance(result.get("revised_plan"), list) else None
+            
+            # Log the complete review response for debugging
+            _log_info(f"[Review] Full response: {json.dumps(result, indent=2)}")
+            _log_info(f"[Review] Approved: {approved}")
+            if reasons:
+                _log_info(f"[Review] Reasons: {reasons}")
+            if revised:
+                _log_info(f"[Review] Revised plan provided: {len(revised)} steps")
 
             applied_plan = None
             if revised and not approved:
@@ -461,6 +476,13 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
     
     def chat(self, user_message: str) -> str:
         """Main chat function - handles user input and returns response"""
+        
+        # Show thinking indicator in chat
+        if self.on_assistant_message:
+            try:
+                self.on_assistant_message("🤔 Assistant is thinking...")
+            except Exception:
+                pass
         
         # Add user message to conversation
         self.conversation_history.append({
@@ -679,7 +701,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                     })
                                     _log_info("  ✓ review_plan (auto)")
                                     
-                                    # If plan was approved, send the plan message before continuing
+                                    # If plan was approved, send the plan message and continue execution
                                     if self.plan_approved and self.task_list:
                                         plan_steps = [f"{i+1}. {task.get('title', '')}" for i, task in enumerate(self.task_list)]
                                         plan_message = f"Here's my plan:\n" + "\n".join(plan_steps) + "\n\nI'll execute it now."
@@ -689,7 +711,19 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                             except Exception:
                                                 pass
                                         _log_info("[Plan] Sent plan message to user")
-                                    continue
+                                        
+                                        # Add plan message to conversation history and prompt immediate execution
+                                        self.conversation_history.append({
+                                            "role": "assistant",
+                                            "content": plan_message
+                                        })
+                                        # Add system message to trigger immediate execution
+                                        self.conversation_history.append({
+                                            "role": "system",
+                                            "content": "Plan approved and communicated. Execute the first robot command immediately using execute_robot_command."
+                                        })
+                                        # Don't continue here - let the robot command execute normally
+                                    # Continue to execute the robot command
                                 result_payload = self.available_functions[function_name](**function_args)
                                 if self.on_tool_result:
                                     try:
@@ -875,6 +909,8 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             b { font-weight: 600; }
             .user { color: #93C5FD; } /* light blue */
             .assistant { color: #A78BFA; } /* lavender */
+            .assistant.thinking { color: #A78BFA; opacity: 0.4; } /* more transparent thinking message */
+            .assistant.thinking small { font-size: 0.85em; } /* smaller thinking text */
             """
         )
         chat_layout.addWidget(self.chat_history, 1)
@@ -892,7 +928,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         # Right panel (Status)
         right_widget = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right_widget)
-        status_group = QtWidgets.QGroupBox("Status & Activity")
+        status_group = QtWidgets.QGroupBox("Status and Activity")
         status_layout = QtWidgets.QVBoxLayout(status_group)
         right_layout.addWidget(status_group, 1)
         # Ensure the right side (with checklist) starts wider
@@ -903,6 +939,7 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
         
         meta_form.addWidget(QtWidgets.QLabel("User Task:"), 0, 0)
         self.current_user_task_label = QtWidgets.QLabel("-")
+        self.current_user_task_label.setObjectName("userTaskLabel")  # Add object name for CSS styling
         meta_form.addWidget(self.current_user_task_label, 0, 1)
         
         meta_form.addWidget(QtWidgets.QLabel("Executing:"), 1, 0)
@@ -1021,6 +1058,8 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             /* Larger, emoji-capable font for chat */
             QTextEdit { font-size: 15px; font-family: 'Inter','Segoe UI','Noto Sans','DejaVu Sans','Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
             QLineEdit { font-size: 14px; font-family: 'Inter','Segoe UI','Noto Sans','DejaVu Sans',sans-serif; }
+            /* User task label styling */
+            QLabel#userTaskLabel { color: #93C5FD; font-weight: 500; }
             QPushButton { background-color: #2563EB; color: #FFFFFF; border: none; padding: 6px 10px; border-radius: 6px; }
             QPushButton:hover { background-color: #1D4ED8; }
             QTreeWidget { background-color: #1E1E1E; border: 1px solid #2A2A2A; border-radius: 6px; }
@@ -1058,8 +1097,13 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             # Blue person emoji for user
             self.chat_history.append(f"<span class='user'><b><span class='emoji'>👤</span> You:</b> {self._escape_html(text)}</span>")
         else:
-            # Robot emoji for assistant
-            self.chat_history.append(f"<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> {self._escape_html(text)}</span>")
+            # Robot emoji for assistant - check if it's a thinking message
+            if text == "🤔 Assistant is thinking...":
+                # Smaller, transparent thinking message (no bold, italic)
+                self.chat_history.append(f"<span class='assistant thinking'><small><em>{self._escape_html(text)}</em></small></span>")
+            else:
+                # Regular assistant message
+                self.chat_history.append(f"<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> {self._escape_html(text)}</span>")
     
     def _escape_html(self, s: str) -> str:
         return (s
