@@ -3,6 +3,10 @@
 
 **An autonomous AI-powered kitchen robot that demonstrates the power of GPT-OSS reasoning combined with NVIDIA GR00T robotics for real-world task execution.**
 
+
+https://github.com/user-attachments/assets/b71d5ca3-156d-4f90-bffe-83946aea558c
+
+
 ## 🏆 Hackathon Innovation
 
 This project showcases a breakthrough in autonomous robotics by combining **GPT-OSS's advanced reasoning capabilities** with **NVIDIA GR00T's robotic foundation model** to create the first truly autonomous kitchen assistant that operates through pure natural language understanding.
@@ -178,3 +182,162 @@ The system successfully demonstrates:
 - Creates reusable patterns for future AI-robotics integration
 
 This project represents a fundamental breakthrough in autonomous robotics, demonstrating how advanced AI reasoning (GPT-OSS) can be effectively combined with sophisticated robotic platforms (GR00T) to create truly intelligent, autonomous systems that operate safely and reliably in the real world.
+
+## 🧪 Testing Instructions
+
+### Prerequisites
+1. **Python 3.8+** with PyQt5 installed
+2. **GPT-OSS model** running on Ollama (localhost:11434)
+3. **Robot hardware** (optional - see testing modes below)
+
+### Quick Start
+```bash
+git clone https://github.com/alex-luci/RoboChef.git
+cd gpt-oss-inference
+pip install -r requirements.txt  # PyQt5, requests
+python gpt-oss-chat-function-ui.py
+```
+
+### 🖥️ User Interface Overview
+
+The application features a comprehensive dual-panel interface:
+
+#### **Left Panel: Chat Interface**
+- **Natural Language Input**: Type commands like "make me a pineapple smoothie" or "open the cabinet door"
+- **Streaming Responses**: Real-time AI thinking and communication
+- **Status Indicators**: Visual feedback for different AI states:
+  - 🤔 **Assistant is thinking...** (purple) - Planning phase
+  - 📋 **Assistant is reviewing...** (orange) - Plan validation
+  - ✅ **Plan approved** (green) - Ready for execution
+  - ❌ **Plan rejected** (red) - Plan needs revision
+  - 🚀 **Assistant is executing...** (green) - Robot in action
+
+#### **Right Panel: Control & Monitoring**
+- **Status Dashboard**: Current task, execution state, and plan approval status
+- **Dynamic Checklist**: Real-time task progression with checkmarks
+- **Kitchen State Monitor**: Live environment conditions
+- **Activity Log**: Complete operational audit trail
+
+### 🔧 Testing Modes
+
+#### **1. Safe Testing Mode (Recommended for First-Time Users)**
+
+**Purpose**: Test the complete AI reasoning system without robot hardware
+
+**Setup**:
+1. Launch the application
+2. **UNCHECK** the "Send to robot" checkbox (bottom right)
+
+<img width="1097" height="726" alt="sendtorbot" src="https://github.com/user-attachments/assets/a16d3dfe-abc2-4286-9249-ee744e3e0f25" />
+
+   
+4. Start testing with natural language commands
+
+
+**What Happens**:
+- ✅ Full AI planning and reasoning
+- ✅ Plan validation and revision
+- ✅ Complete UI interaction
+- ✅ State management and tracking
+- ❌ No physical robot commands sent
+
+**Perfect for**: Understanding the system, testing AI capabilities, demonstrations
+
+#### **2. Hardware Testing Mode (Advanced Users)**
+
+**Purpose**: Full system testing with actual robot hardware
+
+**Setup**:
+1. Connect robot hardware to `/dev/ttyACM0` and `/dev/ttyACM1`
+2. Ensure robot is calibrated and ready
+3. Launch the application
+4. **CHECK** the "Send to robot" checkbox
+5. Start with simple commands like "open the cabinet door"
+
+**What Happens**:
+- ✅ Complete AI reasoning and planning
+- ✅ Real robot command execution
+- ✅ Physical task completion
+- ✅ Hardware feedback integration
+
+**Perfect for**: Full system validation, real-world demonstrations
+
+### 📝 Test Scenarios
+
+#### **Beginner Tests** (Safe Mode)
+```
+"Hi" → Test basic interaction
+"Open the cabinet door" → Test simple single command
+"Close the cabinet door" → Test state-aware planning
+```
+
+#### **Intermediate Tests** (Safe Mode)
+```
+"Make me a pineapple smoothie" → Test complex multi-step planning
+"Add some salt to the recipient" → Test container access logic
+"Put the pineapple in the container" → Test prerequisite handling
+```
+
+#### **Advanced Tests** (Hardware Mode)
+```
+"Make me a pineapple smoothie with salt" → Full autonomous cooking task
+"Organize the kitchen" → Test adaptive planning
+"Prepare ingredients for cooking" → Test multi-object manipulation
+```
+
+### 🎯 Expected Behaviors
+
+#### **Successful Test Indicators**:
+- **Planning**: AI creates logical step-by-step plans
+- **Validation**: Plans are reviewed and approved/revised appropriately
+- **Execution**: Commands execute in correct sequence
+- **State Updates**: Kitchen state reflects actual changes
+- **Completion**: Tasks marked as complete with checkmarks
+
+#### **Error Handling**: 
+- **Invalid Commands**: System rejects non-canonical commands
+- **Physical Constraints**: Plans respect container/cabinet access rules
+- **Hardware Issues**: Graceful fallback when robot unavailable
+- **Communication Errors**: Automatic retry and recovery
+
+### 🛠️ Troubleshooting
+
+#### **"HTTP 500" Errors**
+- **Cause**: GPT-OSS model communication issues
+- **Solution**: Restart Ollama, check model availability
+
+#### **"Plan Rejected" Loops**
+- **Cause**: AI struggling with complex constraints
+- **Solution**: Try simpler commands first, check kitchen state
+
+#### **Robot Connection Errors**
+- **Cause**: Hardware not connected or in use
+- **Solution**: Switch to "Safe Testing Mode" or check hardware
+
+#### **Salt Command Issues**
+- **Cause**: Hardcoded script path or robot hardware
+- **Solution**: System automatically simulates success when hardware unavailable
+
+### 🎮 Interactive Features
+
+#### **Real-Time Monitoring**
+- Watch AI reasoning process in real-time
+- See plan validation and revision cycles
+- Monitor task execution progress
+- Track kitchen state changes
+
+#### **Safety Controls**
+- Toggle robot commands on/off instantly
+- Clear task lists and reset state
+- Comprehensive activity logging
+- Emergency stop capabilities
+
+### 💡 Pro Tips for Testing
+
+1. **Start Simple**: Begin with single commands before complex tasks
+2. **Watch the Process**: Observe the AI thinking → reviewing → executing flow
+3. **Test Edge Cases**: Try impossible requests to see error handling
+4. **Use Safe Mode**: Perfect for demonstrations and learning
+5. **Monitor Logs**: Activity log shows detailed system operations
+
+This testing framework allows anyone to experience the full power of GPT-OSS reasoning combined with robotic execution, whether for research, demonstration, or development purposes.
