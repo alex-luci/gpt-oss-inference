@@ -361,6 +361,13 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
         Returns a payload with approved, reasons, and optionally a revised plan that is applied to the UI.
         """
         try:
+            # Show reviewing indicator in chat
+            if self.on_assistant_message:
+                try:
+                    self.on_assistant_message("📋 Assistant is reviewing...")
+                except Exception:
+                    pass
+            
             # Build a compact review prompt focused on principles, without hardcoded domain rules
             rubric = (
                 "You are a strict plan validator for a kitchen robot. Review the proposed plan using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic physical/common-sense constraints; and (4) the requirement to use canonical commands exactly. "
@@ -464,6 +471,16 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             # Logs and brief chat line
             status_txt = "Approved" if approved else "Needs revision"
             _log_info(f"[Review] {status_txt} — reasons: {len(reasons)} — revised_applied: {bool(applied_plan)}")
+            # Show approval/rejection status in chat
+            if self.on_assistant_message:
+                try:
+                    if approved:
+                        self.on_assistant_message("✅ Plan approved")
+                    else:
+                        self.on_assistant_message("❌ Plan rejected")
+                except Exception:
+                    pass
+            
             # Track approval state
             self.plan_approved = approved
             
@@ -960,6 +977,12 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             .assistant.thinking small { font-size: 0.85em; } /* smaller thinking text */
             .assistant.executing { color: #10B981; opacity: 0.7; } /* green executing message */
             .assistant.executing small { font-size: 0.85em; } /* smaller executing text */
+            .assistant.reviewing { color: #F59E0B; opacity: 0.6; } /* orange reviewing message */
+            .assistant.reviewing small { font-size: 0.85em; } /* smaller reviewing text */
+            .assistant.approved { color: #10B981; opacity: 0.8; } /* green approved message */
+            .assistant.approved small { font-size: 0.85em; } /* smaller approved text */
+            .assistant.rejected { color: #EF4444; opacity: 0.8; } /* red rejected message */
+            .assistant.rejected small { font-size: 0.85em; } /* smaller rejected text */
             """
         )
         chat_layout.addWidget(self.chat_history, 1)
@@ -1153,6 +1176,15 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             elif text == "🚀 Assistant is executing...":
                 # Smaller, green executing message (no bold, italic)
                 self.chat_history.append(f"<span class='assistant executing'><small><em>{self._escape_html(text)}</em></small></span>")
+            elif text == "📋 Assistant is reviewing...":
+                # Smaller, orange reviewing message (no bold, italic)
+                self.chat_history.append(f"<span class='assistant reviewing'><small><em>{self._escape_html(text)}</em></small></span>")
+            elif text == "✅ Plan approved":
+                # Smaller, green approved message (no bold, italic)
+                self.chat_history.append(f"<span class='assistant approved'><small><em>{self._escape_html(text)}</em></small></span>")
+            elif text == "❌ Plan rejected":
+                # Smaller, red rejected message (no bold, italic)
+                self.chat_history.append(f"<span class='assistant rejected'><small><em>{self._escape_html(text)}</em></small></span>")
             else:
                 # Regular assistant message
                 self.chat_history.append(f"<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> {self._escape_html(text)}</span>")
