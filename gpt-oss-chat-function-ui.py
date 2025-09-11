@@ -366,6 +366,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "Assess ordering and preconditions based on these inputs. Do not introduce domain-specific assumptions or examples beyond what is implied by the goal and state. "
                 "IMPORTANT: The command 'Put salt in the gray recipient' is a complete action that includes obtaining salt from the nearby counter and dispensing it into the recipient. Salt is available on the counter, NOT in the cabinet. Do not require additional steps to fetch salt. "
                 "SALT RULE: Only add salt if the user explicitly requests it in their original request. Do not assume salt should be added to recipes unless specifically asked for. "
+                "CONTAINER RULE: Cannot add items to the gray recipient if lid_on_gray_recipient is true. The lid must be removed first before adding any items, then replaced after adding items. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
                 "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
                 "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
@@ -462,6 +463,30 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
             _log_info(f"[Review] {status_txt} — reasons: {len(reasons)} — revised_applied: {bool(applied_plan)}")
             # Track approval state
             self.plan_approved = approved
+            
+            # If plan was approved, send plan message and prepare for automatic execution
+            if approved and self.task_list:
+                plan_steps = [f"{i+1}. {task.get('title', '')}" for i, task in enumerate(self.task_list)]
+                plan_message = f"Here's my plan:\n" + "\n".join(plan_steps) + "\n\nI'll execute it now."
+                if self.on_assistant_message:
+                    try:
+                        self.on_assistant_message(plan_message)
+                    except Exception:
+                        pass
+                _log_info("[Plan] Sent plan message to user after approval")
+                
+                # Add the plan message to conversation history
+                self.conversation_history.append({
+                    "role": "assistant", 
+                    "content": plan_message
+                })
+                
+                # Add system message to trigger immediate execution
+                self.conversation_history.append({
+                    "role": "system",
+                    "content": "Begin executing the plan now. Call execute_robot_command for the first task."
+                })
+            
             # No chat messages during review - keep it silent for background processing
 
             result_payload = {
@@ -703,29 +728,9 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                                     })
                                     _log_info("  ✓ review_plan (auto)")
                                     
-                                    # If plan was approved, send the plan message and continue execution
-                                    if self.plan_approved and self.task_list:
-                                        plan_steps = [f"{i+1}. {task.get('title', '')}" for i, task in enumerate(self.task_list)]
-                                        plan_message = f"Here's my plan:\n" + "\n".join(plan_steps) + "\n\nI'll execute it now."
-                                        if self.on_assistant_message:
-                                            try:
-                                                self.on_assistant_message(plan_message)
-                                            except Exception:
-                                                pass
-                                        _log_info("[Plan] Sent plan message to user")
-                                        
-                                        # Add plan message to conversation history and prompt immediate execution
-                                        self.conversation_history.append({
-                                            "role": "assistant",
-                                            "content": plan_message
-                                        })
-                                        # Add system message to trigger immediate execution
-                                        self.conversation_history.append({
-                                            "role": "system",
-                                            "content": "Plan approved and communicated. Execute the first robot command immediately using execute_robot_command."
-                                        })
-                                        # Don't continue here - let the robot command execute normally
-                                    # Continue to execute the robot command
+                                    # Plan message and execution setup is now handled in review_plan function
+                                    # Continue to next iteration to process the system message for execution
+                                    continue
                                 result_payload = self.available_functions[function_name](**function_args)
                                 if self.on_tool_result:
                                     try:
