@@ -486,6 +486,13 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "role": "system",
                     "content": "Begin executing the plan now. Call execute_robot_command for the first task."
                 })
+                
+                # Show executing indicator in chat
+                if self.on_assistant_message:
+                    try:
+                        self.on_assistant_message("🚀 Assistant is executing...")
+                    except Exception:
+                        pass
             
             # No chat messages during review - keep it silent for background processing
 
@@ -947,6 +954,8 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             .assistant { color: #A78BFA; } /* lavender */
             .assistant.thinking { color: #A78BFA; opacity: 0.4; } /* more transparent thinking message */
             .assistant.thinking small { font-size: 0.85em; } /* smaller thinking text */
+            .assistant.executing { color: #10B981; opacity: 0.7; } /* green executing message */
+            .assistant.executing small { font-size: 0.85em; } /* smaller executing text */
             """
         )
         chat_layout.addWidget(self.chat_history, 1)
@@ -1133,10 +1142,13 @@ class KitchenAssistantUI(QtWidgets.QMainWindow):
             # Blue person emoji for user
             self.chat_history.append(f"<span class='user'><b><span class='emoji'>👤</span> You:</b> {self._escape_html(text)}</span>")
         else:
-            # Robot emoji for assistant - check if it's a thinking message
+            # Robot emoji for assistant - check if it's a thinking or executing message
             if text == "🤔 Assistant is thinking...":
                 # Smaller, transparent thinking message (no bold, italic)
                 self.chat_history.append(f"<span class='assistant thinking'><small><em>{self._escape_html(text)}</em></small></span>")
+            elif text == "🚀 Assistant is executing...":
+                # Smaller, green executing message (no bold, italic)
+                self.chat_history.append(f"<span class='assistant executing'><small><em>{self._escape_html(text)}</em></small></span>")
             else:
                 # Regular assistant message
                 self.chat_history.append(f"<span class='assistant'><b><span class='emoji'>🤖</span> Assistant:</b> {self._escape_html(text)}</span>")
