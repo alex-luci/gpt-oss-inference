@@ -231,7 +231,7 @@ The application features a comprehensive dual-panel interface:
 <img width="1097" height="726" alt="sendtorbot" src="https://github.com/user-attachments/assets/a16d3dfe-abc2-4286-9249-ee744e3e0f25" />
 
    
-4. Start testing with natural language commands
+3. Start testing with natural language commands
 
 
 **What Happens**:
