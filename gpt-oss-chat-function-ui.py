@@ -368,7 +368,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "SALT RULE: Only add salt if the user explicitly requests it in their original request. Do not assume salt should be added to recipes unless specifically asked for. "
                 "CONTAINER RULE: Cannot add items to the gray recipient if lid_on_gray_recipient is true. The lid must be removed first before adding any items, then replaced after adding items. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
-                "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list; you may only reorder, insert, or remove canonical steps. "
+                "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list: 'Open the left cabinet door', 'Close the left cabinet door', 'Take off the lid from the gray recipient and place it on the counter', 'Pick up the lid from the counter and put it on the gray recipient', 'Pick up the green pineapple from the left cabinet and place it in the gray recipient', 'Put salt in the gray recipient'. You may only reorder, insert, or remove these exact canonical steps. "
                 "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
                 "Prefer minimal changes and preserve the user's intent. "
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
@@ -645,7 +645,8 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "messages": self.conversation_history,
                     "tools": tools,
                     "tool_choice": "auto",
-                    "stream": True
+                    "stream": True,
+                    "temperature": 0.1  # Lower temperature for more consistent JSON generation
                 }
                 
                 # Use non-streaming mode for better reliability
@@ -654,13 +655,41 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 response = requests.post(self.gpt_oss_url, json=payload, timeout=30)
                 
                 if response.status_code != 200:
-                    _log_info(f"[HTTP {response.status_code}] request failed: {response.text[:200]}")
+                    error_text = response.text[:500]  # Show more error text
+                    _log_info(f"[HTTP {response.status_code}] request failed: {error_text}")
+                    
+                    # If it's a tool parsing error, try to continue with simpler approach
+                    if response.status_code == 500 and "parsing tool call" in error_text:
+                        _log_info("[Recovery] Tool parsing error - retrying without tools")
+                        # Try a simpler request without tools to get a text response
+                        simple_payload = {
+                            "model": "gpt-oss:20b", 
+                            "messages": self.conversation_history[-2:],  # Just recent context
+                            "stream": False,
+                            "temperature": 0.1
+                        }
+                        try:
+                            simple_resp = requests.post(self.gpt_oss_url, json=simple_payload, timeout=30)
+                            if simple_resp.status_code == 200:
+                                parsed = self._parse_gpt_response(simple_resp.text)
+                                content = parsed.get("message", {}).get("content", "")
+                                if content:
+                                    if self.on_assistant_message:
+                                        try:
+                                            self.on_assistant_message(content)
+                                        except Exception:
+                                            pass
+                                    self.conversation_history.append({"role": "assistant", "content": content})
+                                    return content
+                        except Exception as e:
+                            _log_info(f"[Recovery] Simple request also failed: {e}")
+                    
                     if self.on_assistant_message:
                         try:
-                            self.on_assistant_message("I'm having trouble connecting to the model right now. Please try again.")
+                            self.on_assistant_message("I'm having trouble with the model right now. Please try again.")
                         except Exception:
                             pass
-                    return f"HTTP Error {response.status_code}: {response.text[:200]}"
+                    return f"HTTP Error {response.status_code}: {error_text}"
                 
                 # Parse non-streaming response
                 parsed = self._parse_gpt_response(response.text)
