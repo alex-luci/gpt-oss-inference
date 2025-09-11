@@ -391,10 +391,16 @@ The robot only understands these exact canonical commands - you cannot paraphras
 - Only add salt to plans if the user explicitly requests it
 - Use the provided kitchen_state to determine current conditions (what's open/closed, where items are located)
 
-**Validation Process:**
-Check if the plan satisfies physical constraints and uses canonical commands. If valid, approve it. If not, provide a minimally revised plan that fixes issues while preserving the user's intent.
-
-Respond in JSON format with: approved (boolean), reasons (array of strings explaining any issues), revised_plan (array of step objects with 'title' field, only if revision needed)."""
+ **Validation Process:**
+ 1. First, check what the user actually requested - respect their EXACT intent and scope
+ 2. If user asks to "open the door" only, don't add closing steps unless they asked for a complete task
+ 3. If user asks for a "smoothie" or complete task, ensure all necessary steps for completion
+ 4. Check if the plan satisfies physical constraints and uses canonical commands
+ 5. If valid, approve it. If not, provide a minimally revised plan that fixes issues while preserving the user's EXACT intent and scope
+ 
+ **CRITICAL: Do not add steps the user didn't request. If they ask to open a door, approve a plan that only opens the door. Only add completion steps for explicit complete tasks like "make a smoothie".**
+ 
+ Respond in JSON format with: approved (boolean), reasons (array of strings explaining any issues), revised_plan (array of step objects with 'title' field, only if revision needed)."""
             )
             review_data = {
                 "user_request": self.current_user_task_text or "smoothie task",
@@ -409,6 +415,7 @@ Respond in JSON format with: approved (boolean), reasons (array of strings expla
             
             # Log what we're sending to the reviewer
             _log_info(f"[Review] Sending to reviewer:")
+            _log_info(f"[Review] User request: {self.current_user_task_text}")
             _log_info(f"[Review] Kitchen state: {self.kitchen_state}")
             _log_info(f"[Review] Plan being reviewed: {[task.get('title') for task in self.task_list]}")
 
