@@ -145,6 +145,7 @@ You can execute robot actions and manage your own state using these functions:
 - Cannot add salt if lid is on gray recipient
 - Must close cabinet door after removing items
 - Must put lid back on gray recipient at the end (for smoothie tasks)
+- For smoothie tasks: complete process includes opening cabinet, removing lid, adding ingredients, closing cabinet, and replacing lid
 
 ## Your Autonomous Process
 1. **Analyze** user request and current state (SILENT - no chat messages)
@@ -367,6 +368,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "IMPORTANT: The command 'Put salt in the gray recipient' is a complete action that includes obtaining salt from the nearby counter and dispensing it into the recipient. Salt is available on the counter, NOT in the cabinet. Do not require additional steps to fetch salt. "
                 "SALT RULE: Only add salt if the user explicitly requests it in their original request. Do not assume salt should be added to recipes unless specifically asked for. "
                 "CONTAINER RULE: Cannot add items to the gray recipient if lid_on_gray_recipient is true. The lid must be removed first before adding any items, then replaced after adding items. "
+                "SMOOTHIE COMPLETION RULE: For smoothie tasks, ensure the complete process: (1) open cabinet, (2) remove lid, (3) add ingredients, (4) close cabinet, (5) replace lid. Missing final steps (close cabinet, replace lid) should be added to the plan. "
                 "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
                 "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list: 'Open the left cabinet door', 'Close the left cabinet door', 'Take off the lid from the gray recipient and place it on the counter', 'Pick up the lid from the counter and put it on the gray recipient', 'Pick up the green pineapple from the left cabinet and place it in the gray recipient', 'Put salt in the gray recipient'. You may only reorder, insert, or remove these exact canonical steps. "
                 "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
@@ -374,6 +376,7 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                 "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
             )
             review_data = {
+                "user_request": self.current_user_task_text or "smoothie task",
                 "kitchen_state": self.kitchen_state,
                 "plan": self.task_list
             }
@@ -653,7 +656,8 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     "tools": tools,
                     "tool_choice": "auto",
                     "stream": True,
-                    "temperature": 0.1  # Lower temperature for more consistent JSON generation
+                    "temperature": 0.0,  # Zero temperature for maximum consistency
+                    "top_p": 0.9  # Slightly reduce randomness
                 }
                 
                 # Use non-streaming mode for better reliability
