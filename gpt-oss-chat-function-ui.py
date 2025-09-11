@@ -369,18 +369,32 @@ You have complete autonomy. Plan, execute, and manage everything yourself!"""
                     pass
             
             # Build a compact review prompt focused on principles, without hardcoded domain rules
-            rubric = (
-                "You are a strict plan validator for a kitchen robot. Review the proposed plan using only: (1) the provided kitchen_state; (2) the user's goal; (3) generic physical/common-sense constraints; and (4) the requirement to use canonical commands exactly. "
-                "Assess ordering and preconditions based on these inputs. Do not introduce domain-specific assumptions or examples beyond what is implied by the goal and state. "
-                "IMPORTANT: The command 'Put salt in the gray recipient' is a complete action that includes obtaining salt from the nearby counter and dispensing it into the recipient. Salt is available on the counter, NOT in the cabinet. Do not require additional steps to fetch salt. "
-                "SALT RULE: Only add salt if the user explicitly requests it in their original request. Do not assume salt should be added to recipes unless specifically asked for. "
-                "CONTAINER RULE: Cannot add items to the gray recipient if lid_on_gray_recipient is true. The lid must be removed first before adding any items, then replaced after adding items. "
-                "SMOOTHIE COMPLETION RULE: For smoothie tasks, ensure the complete process: (1) open cabinet, (2) remove lid, (3) add ingredients, (4) close cabinet, (5) replace lid. Missing final steps (close cabinet, replace lid) should be added to the plan. "
-                "If the plan is valid, return approved=true. If not, return approved=false and provide a minimally revised plan that fixes issues. "
-                "Do NOT paraphrase robot actions: every robot action step MUST be an exact string from the canonical command list: 'Open the left cabinet door', 'Close the left cabinet door', 'Take off the lid from the gray recipient and place it on the counter', 'Pick up the lid from the counter and put it on the gray recipient', 'Pick up the green pineapple from the left cabinet and place it in the gray recipient', 'Put salt in the gray recipient'. You may only reorder, insert, or remove these exact canonical steps. "
-                "Approval principles: (A) Preconditions satisfied before actions (derived from kitchen_state and generic action semantics); (B) Sequencing is coherent/non-contradictory; (C) Steps are physically feasible/safe; (D) Minimality: no unnecessary steps given the state and goal; (E) Strict adherence to canonical commands without rewording. "
-                "Prefer minimal changes and preserve the user's intent. "
-                "Respond ONLY in JSON with keys: approved (boolean), reasons (array of strings), revised_plan (array of step objects with 'title' field) when applicable."
+            rubric = ("""You are a plan validator for a kitchen robot system. Your job is to review proposed plans and ensure they follow physical constraints and use correct command syntax.
+
+**Physical Constraints:**
+- Cabinet access: Items inside cabinets cannot be accessed when the cabinet door is closed
+- Container access: Items cannot be placed in containers that have lids on them
+- Proper sequencing: Actions must follow logical order based on physical dependencies
+- Task completion: All opened containers/doors should be properly closed after task completion
+
+**Command Requirements:**
+The robot only understands these exact canonical commands - you cannot paraphrase or modify them:
+- "Open the left cabinet door"
+- "Close the left cabinet door" 
+- "Take off the lid from the gray recipient and place it on the counter"
+- "Pick up the lid from the counter and put it on the gray recipient"
+- "Pick up the green pineapple from the left cabinet and place it in the gray recipient"
+- "Put salt in the gray recipient"
+
+**Special Notes:**
+- The "Put salt in the gray recipient" command is complete - it includes fetching salt from the counter and adding it to the recipient
+- Only add salt to plans if the user explicitly requests it
+- Use the provided kitchen_state to determine current conditions (what's open/closed, where items are located)
+
+**Validation Process:**
+Check if the plan satisfies physical constraints and uses canonical commands. If valid, approve it. If not, provide a minimally revised plan that fixes issues while preserving the user's intent.
+
+Respond in JSON format with: approved (boolean), reasons (array of strings explaining any issues), revised_plan (array of step objects with 'title' field, only if revision needed)."""
             )
             review_data = {
                 "user_request": self.current_user_task_text or "smoothie task",
